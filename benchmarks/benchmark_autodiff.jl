@@ -12,7 +12,7 @@
 #        physical parameter θ (e.g., magnet strength, drift length).
 #      – Two supported frameworks:
 #          a) ForwardDiff.jl   — works out of the box; ZERO code changes needed.
-#          b) Enzyme.jl        — requires EnzymeRules (see section 3 below).
+#          b) Enzyme.jl        — works via the TPSAEnzymeExt package extension.
 #
 # Dependencies (install once):
 #   julia> using Pkg; Pkg.add(["ForwardDiff", "BenchmarkTools", "Enzyme"])
@@ -20,6 +20,7 @@
 
 using TPSA
 using BenchmarkTools
+using Printf
 
 # ------------------------------------------------------------------------------
 # Section 1: ForwardDiff through CTPS coefficients
@@ -124,69 +125,154 @@ b2 = @benchmark (coeff_exp($k0 + $h) - coeff_exp($k0)) / $h
 display(b2); println()
 
 # ------------------------------------------------------------------------------
-# Section 2: Enzyme.jl — current status and required setup
+# Section 2: Enzyme.jl — first and second derivatives (pure Enzyme, no ForwardDiff)
+#
+# Two Enzyme modes are available:
+#
+#   a) gradient(Reverse, f, k)
+#        → df/dk via reverse-mode AD.  Works for all allocating TPSA ops.
+#
+#   b) autodiff(set_runtime_activity(Forward), f, Duplicated(k, 1.0))[1]
+#        → df/dk via forward-mode AD.  Requires set_runtime_activity because
+#          CTPS uses lazy-undef allocation (the degree_mask invariant means
+#          only active positions are written; Enzyme's static analysis sees
+#          the uninitialized positions and conservatively raises an error
+#          without the runtime flag).
+#
+#   c) Composing (b) with itself → d²f/dk² entirely within Enzyme.
+#
+# The TPSAEnzymeExt package extension (loaded automatically alongside Enzyme)
+# registers inactive_type rules for all TPSA-internal types (TPSADesc,
+# DescPool, PolyMap, MulSchedule2D, CompPlan) — no user setup required.
 # ------------------------------------------------------------------------------
 
 println("="^70)
-println("Enzyme.jl — AD Through TPSA Map Coefficients")
+println("Enzyme.jl — First and Second Derivatives of TPSA Coefficients")
 println("="^70)
 
 using Enzyme
-import Enzyme: EnzymeRules
 
-# ── Required: mark non-differentiable TPSA internals as inactive ─────────────
+# ── Setup ─────────────────────────────────────────────────────────────────────
+# set_descriptor! must be called OUTSIDE the differentiated function.
+# The expansion center is the differentiation parameter: CTPS(k, var_n).
+
+set_descriptor!(1, 6)
+
+# Functions whose scalar parameter is k:
+#   f_exp(k)    = cst(exp(CTPS(k, 1)))    = exp(k)
+#   f_sin(k)    = cst(sin(CTPS(k, 1)))    = sin(k)
+#   f_coeff2(k) = element(exp(...), [2])  = exp(k)/2     (2nd Taylor coeff)
+#   f_coeff3(k) = element(exp(...), [3])  = exp(k)/6     (3rd Taylor coeff)
+
+f_exp    = k -> cst(exp(CTPS(k, 1)))
+f_sin    = k -> cst(sin(CTPS(k, 1)))
+f_coeff2 = k -> element(exp(CTPS(k, 1)), [2])  # = exp(k)/2
+f_coeff3 = k -> element(exp(CTPS(k, 1)), [3])  # = exp(k)/6
+
+# ── First derivatives via Reverse mode ───────────────────────────────────────
+
+println("\n--- First derivatives via Enzyme Reverse mode ---")
+k0 = 1.0
+@printf("  d/dk exp(k)     at k=1: got %.10f  expected %.10f\n",
+        Enzyme.gradient(Reverse, f_exp,    k0)[1], exp(k0))
+@printf("  d/dk sin(k)     at k=1: got %.10f  expected %.10f\n",
+        Enzyme.gradient(Reverse, f_sin,    k0)[1], cos(k0))
+@printf("  d/dk coeff[2]   at k=1: got %.10f  expected %.10f\n",
+        Enzyme.gradient(Reverse, f_coeff2, k0)[1], exp(k0)/2)
+@printf("  d/dk coeff[3]   at k=1: got %.10f  expected %.10f\n",
+        Enzyme.gradient(Reverse, f_coeff3, k0)[1], exp(k0)/6)
+
+# ── First derivatives via Forward mode (set_runtime_activity) ────────────────
 #
-# CTPS stores `TPSADesc` (the combinatorial descriptor) alongside the active
-# coefficient vector `c::Vector{Float64}`. Enzyme must be told that all
-# descriptor-related types are non-differentiable (they are pure index tables).
+# set_runtime_activity is required because CTPS uses lazy-undef allocation:
+# only positions within the active degree range are initialized, so Enzyme's
+# static analysis flags them as potentially uninitialized active memory.
+# Runtime activity resolves this correctly.
+
+println("\n--- First derivatives via Enzyme Forward mode ---")
+@printf("  d/dk exp(k)     at k=1: got %.10f  expected %.10f\n",
+        Enzyme.autodiff(set_runtime_activity(Forward), f_exp,    Duplicated(k0, 1.0))[1], exp(k0))
+@printf("  d/dk sin(k)     at k=1: got %.10f  expected %.10f\n",
+        Enzyme.autodiff(set_runtime_activity(Forward), f_sin,    Duplicated(k0, 1.0))[1], cos(k0))
+@printf("  d/dk coeff[2]   at k=1: got %.10f  expected %.10f\n",
+        Enzyme.autodiff(set_runtime_activity(Forward), f_coeff2, Duplicated(k0, 1.0))[1], exp(k0)/2)
+
+# ── Second derivatives via double Forward (Fwd∘Fwd) ──────────────────────────
 #
-# Without these rules, Enzyme raises EnzymeRuntimeActivityError because it
-# sees a constant (`TPSADesc`) being stored into a struct that also carries
-# active data (`c`).
+# d²f/dk² = apply Forward mode to the first-derivative function.
 #
-# Additionally, the internal `DescPool` (thread-local pre-allocated scratch
-# buffers) causes Enzyme to conflate constant pool storage with active working
-# memory. The `inactive_type` rules below partially address the descriptor
-# issue; full Enzyme support would additionally require custom forward/reverse
-# rules (EnzymeRules.forward / EnzymeRules.reverse) for mul!, exp!, sin!, etc.
-# to properly handle the pool.
+#   d1(k) = autodiff(set_runtime_activity(Forward), f, Duplicated(k, 1.0))[1]
+#   d2(k) = autodiff(set_runtime_activity(Forward), d1, Duplicated(k, 1.0))[1]
 #
-# Current state: Enzyme Forward mode works correctly for simple arithmetic
-# (add, subtract, scale) but produces incorrect results for pool-backed math
-# functions (exp, sin, cos, sqrt, log, inv) without custom rules.
-# Tracking issue: https://github.com/EnzymeAD/Enzyme.jl/issues (runtime activity)
+# The outer Forward mode differentiates through the inner Forward computation,
+# which itself allocates CTPS objects and runs the TPSA arithmetic/math
+# functions.  set_runtime_activity on both levels handles the undef-allocation
+# pattern correctly.
 
-EnzymeRules.inactive_type(::Type{<:TPSA.TPSADesc})      = true
-EnzymeRules.inactive_type(::Type{<:TPSA.DescPool})      = true
-EnzymeRules.inactive_type(::Type{<:TPSA.PolyMap})       = true
-EnzymeRules.inactive_type(::Type{<:TPSA.MulSchedule2D}) = true
-EnzymeRules.inactive_type(::Type{<:TPSA.CompPlan})      = true
+println("\n--- Second derivatives via Enzyme Fwd∘Fwd (no ForwardDiff) ---")
 
-println("""
-Status of Enzyme + TPSA:
-  ✓  Arithmetic (add, scale, mul)  — works with inactive_type rules above
-  ✗  Pool-backed math (exp, sin, cos, sqrt, log, inv) — needs custom EnzymeRules
-  ✓  ForwardDiff (recommended)     — works out of the box for all operations
-""")
+d1_exp    = k -> Enzyme.autodiff(set_runtime_activity(Forward), f_exp,    Duplicated(k, 1.0))[1]
+d1_sin    = k -> Enzyme.autodiff(set_runtime_activity(Forward), f_sin,    Duplicated(k, 1.0))[1]
+d1_coeff2 = k -> Enzyme.autodiff(set_runtime_activity(Forward), f_coeff2, Duplicated(k, 1.0))[1]
+d1_coeff3 = k -> Enzyme.autodiff(set_runtime_activity(Forward), f_coeff3, Duplicated(k, 1.0))[1]
 
-# ── Enzyme demo: simple arithmetic (no pool) ─────────────────────────────────
-# Multiplication of two CTPS expanded around zero: just a loop over index pairs.
-# This path does not use the DescPool and works correctly with Enzyme today.
+d2_exp    = Enzyme.autodiff(set_runtime_activity(Forward), d1_exp,    Duplicated(k0, 1.0))[1]
+d2_sin    = Enzyme.autodiff(set_runtime_activity(Forward), d1_sin,    Duplicated(k0, 1.0))[1]
+d2_coeff2 = Enzyme.autodiff(set_runtime_activity(Forward), d1_coeff2, Duplicated(k0, 1.0))[1]
+d2_coeff3 = Enzyme.autodiff(set_runtime_activity(Forward), d1_coeff3, Duplicated(k0, 1.0))[1]
 
-set_descriptor!(1, 4)   # lower order for simpler example
+@printf("  d²/dk² exp(k)     at k=1: got %.10f  expected %.10f  (= exp(k))\n",
+        d2_exp,    exp(k0))
+@printf("  d²/dk² sin(k)     at k=1: got %.10f  expected %.10f  (= -sin(k))\n",
+        d2_sin,    -sin(k0))
+@printf("  d²/dk² coeff[2]   at k=1: got %.10f  expected %.10f  (= exp(k)/2)\n",
+        d2_coeff2, exp(k0)/2)
+@printf("  d²/dk² coeff[3]   at k=1: got %.10f  expected %.10f  (= exp(k)/6)\n",
+        d2_coeff3, exp(k0)/6)
 
-function linear_combo(k)
-    x = CTPS(zero(k), 1)
-    r = k * x + k^2      # r.c[1] = k², r.c[2] = k
-    return r.c[2]         # = k  →  d/dk = 1
+# ── Physics example: quadrupole gradient sensitivity ─────────────────────────
+#
+# A thin quadrupole of integrated strength K₁L rotates the phase-space angle:
+#   x_out = x - K₁L * x   (simplest model: focusing kick)
+# More interesting: the beta-function Courant-Snyder invariant in x is
+#   ε = x² / β,  where β depends on K₁L via the Twiss equations.
+#
+# Here we use a simple 2nd-order map: a thin sextupole rotated by K1
+#   x_out = cos(K1) * x - sin(K1) * px
+#   px_out = sin(K1) * x + cos(K1) * px  (rotation by K1)
+# and ask: what is d²/dK1² of the quadratic coefficient of x_out?
+#
+# Physical quantity: element of x_out (1-variable CTPS in x) quadratic coeff.
+#   f(K1) = element of (cos(K1)*x - sin(K1)*1) expanded in x,
+#            coefficient of x^1  = cos(K1)
+#   df/dK1 = -sin(K1),   d²f/dK1² = -cos(K1)
+
+set_descriptor!(1, 3)
+
+function rotation_coeff(K1)
+    x = CTPS(K1, 1)    # expansion around K1 in the "x" variable (unusual but valid)
+    # linear term coefficient of cos(K1)*x  — expand the whole expression in x
+    t = cos(K1) * x    # scalar * CTPS,  coefficient of x^1 = cos(K1)
+    return element(t, [1])
 end
 
-g_enz = autodiff(set_runtime_activity(Forward), linear_combo, Duplicated(3.0, 1.0))
-fd_g  = ForwardDiff.derivative(linear_combo, 3.0)
-println("Simple arithmetic (k·x + k²), dc₂/dk at k=3.0:")
-println("  Enzyme (runtime_activity):  $(g_enz[1])")
-println("  ForwardDiff:                $fd_g")
-println("  Expected:                   1.0")
+# Simpler and cleaner: the K1 itself is the parameter
+function rotation_linear_coeff(K1)
+    # linear coeff of (cos(K1) * x): just cos(K1) as a function of K1
+    # use CTPS(K1,1) so the expansion center carries K1-dependence
+    x = CTPS(0.0, 1)
+    t = cos(K1) * x        # scalar(K1) * CTPS — only scalar multiplication
+    return element(t, [1]) # = cos(K1)
+end
+
+# First and second derivatives of the linear coeff w.r.t. K1
+d1_rot = k -> Enzyme.autodiff(set_runtime_activity(Forward), rotation_linear_coeff, Duplicated(k, 1.0))[1]
+
+K1 = π/6
+d1_K1 = d1_rot(K1)
+d2_K1 = Enzyme.autodiff(set_runtime_activity(Forward), d1_rot, Duplicated(K1, 1.0))[1]
+@printf("\nThin rotation: d/dK1[cos(K1)] at K1=π/6:   got %.10f  expected %.10f\n", d1_K1, -sin(K1))
+@printf("Thin rotation: d²/dK1²[cos(K1)] at K1=π/6: got %.10f  expected %.10f\n", d2_K1, -cos(K1))
 
 println()
 println("="^70)
@@ -195,12 +281,16 @@ println("="^70)
 println("""
 For differentiating TPSA map coefficients w.r.t. physical parameters:
 
-  • Use ForwardDiff.jl — zero setup, correct for all TPSA operations.
-    Works because CTPS{T} is fully T-generic; dual numbers propagate
-    through arithmetic, power series loops, and math functions unchanged.
+  • Use ForwardDiff.jl for first derivatives — zero setup, works for all
+    TPSA operations via the T-generic CTPS{T} type.
 
-  • Enzyme.jl — planned for future support via custom EnzymeRules.
-    The pool pattern (DescPool) and constant struct fields (TPSADesc)
-    require explicit forward/reverse rules before Enzyme can be used
-    for the full set of TPSA operations.
+  • Use Enzyme.jl (Reverse mode) for first derivatives — automatic via the
+    TPSAEnzymeExt extension; use the expansion center as the parameter.
+
+  • Use Enzyme.jl double-Forward (Fwd∘Fwd) for second derivatives — pure
+    Enzyme, no ForwardDiff needed.  Requires set_runtime_activity on both
+    levels to handle CTPS's lazy-undef allocation pattern.
+    Pattern:
+      d1  = k -> autodiff(set_runtime_activity(Forward), f, Duplicated(k, 1.0))[1]
+      d2  =      autodiff(set_runtime_activity(Forward), d1, Duplicated(k0, 1.0))[1]
 """)

@@ -232,6 +232,13 @@ end
 grad = Enzyme.gradient(Reverse, exp_value, 1.0)   # returns (exp(1),) ≈ (2.718,)
 ```
 
+### Setup
+
+`using TPSA, Enzyme` is all that's needed. The `TPSAEnzymeExt` package
+extension is loaded automatically and registers the required `inactive_type`
+rules for all TPSA-internal types (`TPSADesc`, `DescPool`, `PolyMap`, etc.) —
+no user-side setup required.
+
 ### Rules
 
 1. **Call `set_descriptor!` OUTSIDE the differentiated function.** Enzyme does

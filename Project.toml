@@ -4,18 +4,17 @@ version = "0.1.0"
 authors = ["Yue Hao <haoyue@msu.edu>"]
 
 [deps]
-Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
-GTPSA = "b27dd330-f138-47c5-815b-40db9dd9b6e8"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[weakdeps]
+Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
+
+[extensions]
+TPSAEnzymeExt = "Enzyme"
 
 [compat]
-Enzyme = "0.13.129"
-GTPSA = "1.5.3"
+Enzyme = "0.13"
 StaticArrays = "1"
-julia = "1.6"
-
-[extras]
-Test = "8dfed614-e22c-358b-2791-21071af5b4e1"
-
-[targets]
-test = ["Test"]
+Test = "1"
+julia = "1.9"

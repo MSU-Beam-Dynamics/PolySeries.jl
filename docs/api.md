@@ -317,6 +317,12 @@ Enzyme can differentiate *through* TPSA computations, giving exact
 first-order sensitivities of any Taylor coefficient with respect to scalar
 "design" parameters.
 
+### Setup
+
+`using TPSA, Enzyme` is sufficient. The `TPSAEnzymeExt` package extension
+loads automatically and registers `inactive_type` rules for all TPSA-internal
+types — no call to `EnzymeRules.inactive_type` is needed in user code.
+
 ### Compatible operations
 
 All allocating forms are Enzyme-compatible:

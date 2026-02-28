@@ -29,4 +29,12 @@ using TPSA
     @testset "Arithmetic Accuracy" begin
         include("arithmetic_tests.jl")
     end
+
+    @testset "Extension: TPSAEnzymeExt" begin
+        try
+            include("ext_enzyme_test.jl")
+        catch e
+            @warn "Skipping TPSAEnzymeExt tests (Enzyme unavailable): $e"
+        end
+    end
 end
