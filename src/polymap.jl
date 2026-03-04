@@ -72,6 +72,7 @@ function decomposite(n::Int, dim::Int)
     for i in dim:-1:2  
         result[i] = result[i - 1] - result[i]
     end
+    result[end] = result[1] - sum(result[2:end-1])
     return result
 end
 
