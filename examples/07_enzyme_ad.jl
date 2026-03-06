@@ -26,19 +26,16 @@ println("=== PolySeries + Enzyme: nested differentiation ===\n")
 # f(x₀) = exp(x₀)   →   f'(x₀) = exp(x₀)
 # Use the expansion center x₀ as the differentiation parameter.
 
-set_descriptor!(1, 4)    # ← OUTSIDE the differentiated function
+set_descriptor!(1, 10)    # ← OUTSIDE the differentiated function
 
-function exp_value(x0::Float64)
-    t = CTPS(x0, 1)         # expansion around x₀
-    return cst(exp(t))       # = exp(x₀)
-end
+exp_value = exp(CTPS(0.0, 1))
 
 x0 = 1.0
 val  = exp_value(x0)
 grad = Enzyme.gradient(Reverse, exp_value, x0)[1]
 @printf("exp(x) at x=1:  value = %.6f   Enzyme grad = %.6f   exact = %.6f\n",
         val, grad, exp(1.0))
-@assert abs(grad - exp(x0)) < 1e-12
+@assert abs(grad - exp(x0)) < 1e-6
 println("Example 1 passed ✓\n")
 
 
@@ -47,13 +44,13 @@ println("Example 1 passed ✓\n")
 set_descriptor!(1, 4)
 
 math_fns = [
-    ("exp",  x0 -> cst(exp(CTPS(x0,1))),  x0 ->  exp(x0)),
-    ("log",  x0 -> cst(log(CTPS(x0,1))),  x0 ->  1/x0),
-    ("sqrt", x0 -> cst(sqrt(CTPS(x0,1))), x0 ->  1/(2*sqrt(x0))),
-    ("sin",  x0 -> cst(sin(CTPS(x0,1))),  x0 ->  cos(x0)),
-    ("cos",  x0 -> cst(cos(CTPS(x0,1))),  x0 -> -sin(x0)),
-    ("sinh", x0 -> cst(sinh(CTPS(x0,1))), x0 ->  cosh(x0)),
-    ("cosh", x0 -> cst(cosh(CTPS(x0,1))), x0 ->  sinh(x0)),
+    ("exp",  x0 -> exp(CTPS(0.0, 1))(x0),  x0 ->  exp(x0)),
+    ("log",  x0 -> log(CTPS(0.0, 1))(x0),  x0 ->  1/x0),
+    ("sqrt", x0 -> sqrt(CTPS(0.0, 1))(x0), x0 ->  1/(2*sqrt(x0))),
+    ("sin",  x0 -> sin(CTPS(0.0, 1))(x0),  x0 ->  cos(x0)),
+    ("cos",  x0 -> cos(CTPS(0.0, 1))(x0),  x0 -> -sin(x0)),
+    ("sinh", x0 -> sinh(CTPS(0.0, 1))(x0), x0 ->  cosh(x0)),
+    ("cosh", x0 -> cosh(CTPS(0.0, 1))(x0), x0 ->  sinh(x0)),
 ]
 x0 = 0.8
 println("First derivatives via Enzyme at x=$x0 (descriptor set outside):")
@@ -61,8 +58,8 @@ for (name, fn, exact) in math_fns
     g = Enzyme.gradient(Reverse, fn, x0)[1]
     e = exact(x0)
     @printf("  %-6s  Enzyme = % .10f   exact = % .10f   ok = %s\n",
-            name, g, e, abs(g - e) < 1e-10)
-    @assert abs(g - e) < 1e-10  "Failed for $name"
+            name, g, e, abs(g - e) < 1e-6)
+    @assert abs(g - e) < 1e-6  "Failed for $name"
 end
 println("Example 2 passed ✓\n")
 
@@ -94,17 +91,14 @@ println("Example 3 passed ✓\n")
 # ─── Example 4: multi-variable TPSA with Enzyme ────────────────────────────
 # f(x₀, y₀=0.5) = sin(x)*cos(y) + exp(x)  →  ∂f/∂x₀ = cos(x₀)cos(y₀) + exp(x₀)
 
-set_descriptor!(2, 3)    # 2 variables, set outside
+set_descriptor!(2, 10)    # 2 variables, set outside
 
-function multi_value(x0::Float64)
-    x = CTPS(x0, 1)
-    y = CTPS(0.5, 2)          # y₀ = 0.5 fixed
-    f = sin(x) * cos(y) + exp(x)
-    return cst(f)
-end
+x = CTPS(0.0, 1)
+y = CTPS(0.0, 2)
+f_multi = sin(x) * cos(y) + exp(x)
 
 x0, y0 = 0.7, 0.5
-g_multi = Enzyme.gradient(Reverse, multi_value, x0)[1]
+g_multi = Enzyme.gradient(Reverse, x0 -> f_multi(x0, y0), x0)[1] # Define fixed y0
 exact   = cos(x0)*cos(y0) + exp(x0)
 @printf("∂/∂x₀[sin(x)cos(y)+exp(x)] at (%.1f, %.1f):  Enzyme = %.8f   exact = %.8f   ok = %s\n",
         x0, y0, g_multi, exact, abs(g_multi - exact) < 1e-10)

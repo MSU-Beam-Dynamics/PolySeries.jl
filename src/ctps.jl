@@ -640,19 +640,27 @@ end
 
 # Defining callable instance
 function (ctps::CTPS{T})(args::T...) where T
-    if length(args) != ctps.desc.nv
+    # Descriptor lookup outside the loop — avoids repeated global Ref access
+    # through the virtual getproperty, whose Union{PSDesc,Nothing} return type
+    # causes Enzyme to expand both branches on every loop iteration.
+    desc = ctps.desc::PSDesc
+    nv   = desc.nv
+    if length(args) != nv
         error("Number of arguments does not match the number of variables in the CTPS")
     end
 
     return_value = ctps.c[1]  # Start with the constant term
-
-    for i in 2:length(ctps.c)
-        exponents = @view ctps.desc.polymap.map[i, 2:end]
-        return_value += ctps.c[i] * prod(args.^exponents)
+    pm = desc.polymap.map     # Get the polymap matrix for exponent lookups
+    @inbounds for i in 2:length(ctps.c)
+        val = ctps.c[i]
+        for v in 1:nv
+            e = Int(pm[i, v + 1]) # Enzyme likes Int better
+            e == 0 && continue # Skip multipling by 1
+            val *= args[v]^e
+        end 
+        return_value += val
     end
-   
     return return_value
-        
 end
 
 
