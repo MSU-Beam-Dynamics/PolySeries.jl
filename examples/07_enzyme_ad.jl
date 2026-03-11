@@ -135,6 +135,50 @@ exact = -sin(x0) * cos(y0)
 println("Example 5 passed ✓\n")
 
 
+# ─── Example 6: all seven supported math functions w/ respect to expansion term ─────
+
+set_descriptor!(1, 10)
+
+math_fns = [
+    ("exp",  x0 -> exp(CTPS(0.0, 1))(x0),  x0 ->  exp(x0)),
+    ("sqrt", x0 -> sqrt(CTPS(1.0, 1))(x0), x0 ->  1/(2*sqrt(1.0+x0))),
+    ("sin",  x0 -> sin(CTPS(0.0, 1))(x0),  x0 ->  cos(x0)),
+    ("cos",  x0 -> cos(CTPS(0.0, 1))(x0),  x0 -> -sin(x0)),
+    ("sinh", x0 -> sinh(CTPS(0.0, 1))(x0), x0 ->  cosh(x0)),
+    ("cosh", x0 -> cosh(CTPS(0.0, 1))(x0), x0 ->  sinh(x0)),
+    ("log",  x0 -> log(CTPS(0.5, 1))(x0),  x0 ->  1/(x0+0.5)),
+]
+println("First derivatives via Enzyme at x=$x0 (descriptor set outside):")
+for (name, fn, exact) in math_fns
+    if name == "log"
+        xt = 0.03
+    else
+        xt = 0.3
+    end
+    g = Enzyme.gradient(Reverse, fn, xt)[1]
+    e = exact(xt)
+    @printf("  %-6s  Enzyme = % .10f   exact = % .10f   ok = %s\n",
+            name, g, e, abs(g - e) < 1e-6)
+    @assert abs(g - e) < 1e-6  "Failed for $name"
+end
+println("Example 6 passed ✓\n")
+
+
+# ─── Example 7: d/dx of sin(x)cos(x) + exp(x) w.r.t. the expansion term
+
+set_descriptor!(1, 10)
+
+x = CTPS(0.0, 1)
+f = sin(x) * cos(x) + exp(x)
+
+x0 = 0.5
+g_lc  = Enzyme.gradient(Reverse, f, x0)[1]
+exact = exp(x0) - sin(x0)^2 + cos(x0)^2
+@printf("∂/∂x[sin(x)cos(x) + exp(x)] at x=%.1f:  Enzyme = %.8f   exact = %.8f   ok = %s\n",
+        x0, g_lc, exact, abs(g_lc - exact) < 1e-6)
+@assert abs(g_lc - exact) < 1e-6
+println("Example 7 passed ✓\n")
+
 # ─── Summary of rules ───────────────────────────────────────────────────────────────
 println("""
 Key rules for PolySeries + Enzyme
