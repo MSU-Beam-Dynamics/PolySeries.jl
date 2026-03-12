@@ -135,7 +135,7 @@ exact = -sin(x0) * cos(y0)
 println("Example 5 passed ✓\n")
 
 
-# ─── Example 6: all seven supported math functions w/ respect to expansion term ─────
+# ─── Example 6: all seven supported math functions w.r.t. expansion term ─────
 
 set_descriptor!(1, 10)
 
@@ -178,6 +178,28 @@ exact = exp(x0) - sin(x0)^2 + cos(x0)^2
         x0, g_lc, exact, abs(g_lc - exact) < 1e-6)
 @assert abs(g_lc - exact) < 1e-6
 println("Example 7 passed ✓\n")
+
+# ---- Example 8: ∂/∂w₀ of coefficient of sinusoidal expansion  ----
+# Coefficient of x³ in sin(w₀x₀)]:  -w₀³x₀³cos(w₀x₀)/6
+# ∂/∂w₀ = w₀³x₀sin(w₀x₀)/6 - w₀²cos(w₀x₀)/2
+
+set_descriptor!(1, 4)
+
+function sinwx(x0::Float64, w::Float64, k::Int)
+    x = CTPS(x0, 1)
+    return element(sin(w*x), [k])
+end
+
+x0 = 1/4
+w0 = 0.205*pi
+k0 = 3
+
+g_sinwx = Enzyme.gradient(Reverse, w0 -> sinwx(x0, w0, k0), w0)[1]
+exact = w0^3 * x0 * sin(w0*x0) / 6 - w0^2 * cos(w0*x0) / 2
+@printf("∂/∂w₀[coeff x³ of sin(w₀x₀)] at w₀=%.2f:  Enzyme = %.8f   exact = %.8f   ok = %s\n",
+        w0, g_sinwx, exact, abs(g_sinwx - exact) < 1e-10)
+@assert abs(g_sinwx - exact) < 1e-10
+println("Example 8 passed ✓\n")
 
 # ─── Summary of rules ───────────────────────────────────────────────────────────────
 println("""
