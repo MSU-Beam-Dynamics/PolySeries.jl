@@ -657,7 +657,7 @@ function (ctps::CTPS{T})(args::T...) where T
             e = Int(pm[i, v + 1]) # Enzyme likes Int better
             e == 0 && continue # Skip multipling by 1
             val *= args[v]^e
-        end 
+        end
         return_value += val
     end
     return return_value
