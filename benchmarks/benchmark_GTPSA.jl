@@ -173,8 +173,8 @@ function mathfunc_benchmark(fn_sym::Symbol, nv::Int, order::Int, n_samples::Int=
     # TPSA: in-place version — fn!(result, ctps) writes into pre-allocated result
     fn_inplace_sym = Symbol(fn_sym, "!")
     result_tpsa = CTPS(Float64)
-    if isdefined(TPSA, fn_inplace_sym)
-        fn_inplace = getfield(TPSA, fn_inplace_sym)
+    if isdefined(PolySeries, fn_inplace_sym)
+        fn_inplace = getfield(PolySeries, fn_inplace_sym)
         t_inplace = @benchmark $fn_inplace($result_tpsa, $x_tpsa) samples=n_samples evals=10
         tpsa_inplace_ms = median(t_inplace).time / 1e6
     else

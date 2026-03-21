@@ -57,6 +57,39 @@ function ref_cosh(a0, order)
     sa, ca = sinh(a0), cosh(a0)
     [iseven(k) ? ca / factorial(k) : sa / factorial(k) for k in 0:order]
 end
+function ref_asin(a0, order)
+    c0      = sqrt(1.0 - a0^2)
+    inv_c0  = 1.0 / c0
+    inv_2c0 = inv_c0 / 2.0
+    B = Vector{Float64}(undef, order + 1)
+    B[1] = c0
+    for n in 1:order
+        R = n == 1 ? -2.0 * a0 : (n == 2 ? -1.0 : 0.0)
+        s = sum(B[j+1] * B[n-j+1] for j in 1:n-1; init = 0.0)
+        B[n+1] = (R - s) * inv_2c0
+    end
+    coeffs    = Vector{Float64}(undef, order + 1)
+    coeffs[1] = asin(a0)   # h^0 term
+    if order >= 1
+        coeffs[2] = inv_c0   # h^1 term
+        A = Vector{Float64}(undef, order)
+        A[1] = inv_c0
+        for n in 1:order-1
+            s = sum(B[j+1] * (n - j + 1) * A[n-j+1] for j in 1:n; init = 0.0)
+            A[n+1] = -s * inv_c0 / (n + 1)
+            coeffs[n+2] = A[n+1]
+        end
+    end
+    coeffs
+end
+function ref_acos(a0, order)
+    c = ref_asin(a0, order)
+    c[1] = acos(a0)   # π/2 - asin(a0)
+    for k in 2:order+1
+        c[k] = -c[k]
+    end
+    c
+end
 
 """Evaluate a 1-variable CTPS polynomial at a0+h: sum c[k] * h^k."""
 function polyval(y::CTPS, h::Float64)
@@ -117,8 +150,8 @@ function run_accuracy(order::Int = 8)
         ("tan",   PolySeries.tan,  Base.tan,  nothing),
         ("sinh",  PolySeries.sinh, Base.sinh, (a,o) -> ref_sinh(a, o)),
         ("cosh",  PolySeries.cosh, Base.cosh, (a,o) -> ref_cosh(a, o)),
-        ("asin",  Base.asin, Base.asin, nothing),
-        ("acos",  Base.acos, Base.acos, nothing),
+        ("asin",  PolySeries.asin, Base.asin, (a,o) -> ref_asin(a, o)),
+        ("acos",  PolySeries.acos, Base.acos, (a,o) -> ref_acos(a, o)),
     ]
 
     # In-place variants (result must match allocating version)
@@ -130,6 +163,8 @@ function run_accuracy(order::Int = 8)
         ("cos!",   cos!,   PolySeries.cos,  (a,o) -> ref_cos(a, o)),
         ("sinh!",  sinh!,  PolySeries.sinh, (a,o) -> ref_sinh(a, o)),
         ("cosh!",  cosh!,  PolySeries.cosh, (a,o) -> ref_cosh(a, o)),
+        ("asin!",  asin!,  PolySeries.asin, (a,o) -> ref_asin(a, o)),
+        ("acos!",  acos!,  PolySeries.acos, (a,o) -> ref_acos(a, o)),
     ]
 
     results = AccuracyResult[]
@@ -183,8 +218,8 @@ function run_performance(configs; n_samples::Int = 150)
         ("tan",   PolySeries.tan,  nothing, false),
         ("sinh",  PolySeries.sinh, sinh!,  true ),
         ("cosh",  PolySeries.cosh, cosh!,  true ),
-        ("asin",  Base.asin, nothing, false),
-        ("acos",  Base.acos, nothing, false),
+        ("asin",  PolySeries.asin, asin!,  true ),
+        ("acos",  PolySeries.acos, acos!,  true ),
         ("inv",   inv,       nothing, false),
     ]
 
@@ -270,7 +305,8 @@ function main()
     scale_fns = [
         ("exp",  PolySeries.exp),  ("log",  PolySeries.log),  ("sqrt", PolySeries.sqrt),
         ("sin",  PolySeries.sin),  ("cos",  PolySeries.cos),  ("tan",  PolySeries.tan),
-        ("sinh", PolySeries.sinh), ("cosh", PolySeries.cosh), ("asin", Base.asin),
+        ("sinh", PolySeries.sinh), ("cosh", PolySeries.cosh),
+        ("asin", PolySeries.asin), ("acos", PolySeries.acos),
         ("inv",  inv),
     ]
     orders = [4, 6, 8, 10, 12]

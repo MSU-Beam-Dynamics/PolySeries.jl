@@ -605,31 +605,31 @@ end
 #     ctps_new = CTPS{T, TPS_Dim, Max_TPS_Degree}(degree, terms, new_map, PolyMap(TPS_Dim, Max_TPS_Degree))
 #     return ctps_new
 # end
-function assign!(ctps::CTPS{T}, a::T, n_var::Int) where T
-    if n_var <= ctps.desc.nv && n_var > 0
-        ctps.c[n_var + 1] = one(T)
-        ctps.c[1] = a
-        return nothing
-    else
-        error("Variable index out of range in CTPS")
-    end
-end
+# function assign!(ctps::CTPS{T}, a::T, n_var::Int) where T
+#     if n_var <= ctps.desc.nv && n_var > 0
+#         ctps.c[n_var + 1] = one(T)
+#         ctps.c[1] = a
+#         return nothing
+#     else
+#         error("Variable index out of range in CTPS")
+#     end
+# end
 
-function assign!(ctps::CTPS{T}, a::T) where T
-    ctps.c[1] = a
-    return nothing
-end
+# function assign!(ctps::CTPS{T}, a::T) where T
+#     ctps.c[1] = a
+#     return nothing
+# end
 
-function reassign!(ctps::CTPS{T}, a::T, n_var::Int) where T
-    if n_var <= ctps.desc.nv && n_var > 0
-        fill!(ctps.c, zero(T))
-        ctps.c[n_var + 1] = one(T)
-        ctps.c[1] = a
-        return nothing
-    else
-        error("Variable index out of range in CTPS")
-    end
-end
+# function reassign!(ctps::CTPS{T}, a::T, n_var::Int) where T
+#     if n_var <= ctps.desc.nv && n_var > 0
+#         fill!(ctps.c, zero(T))
+#         ctps.c[n_var + 1] = one(T)
+#         ctps.c[1] = a
+#         return nothing
+#     else
+#         error("Variable index out of range in CTPS")
+#     end
+# end
 
 
 
@@ -1070,8 +1070,7 @@ function copy!(dest::CTPS{T}, src::CTPS{T}) where T
 end
 
 function zero!(ctps::CTPS{T}) where T
-    fill!(ctps.c, zero(T))
-    ctps.degree_mask[] = UInt64(0)
+    _zero_active!(ctps)
     return nothing
 end
 
@@ -1834,26 +1833,129 @@ function cos!(result::CTPS{T}, ctps::CTPS{T}) where T
     return result
 end
 
+# ── arcsin / arccos ─────────────────────────────────────────────────────────
+#
+# Algorithm: direct Taylor expansion via scalar coefficient recurrence.
+#
+# Split f = a0 + h  (a0 = constant term, h has zero constant).
+# We need g = asin(f) = asin(a0) + Σ_{k=1}^{order} A[k] h^k.
+#
+# Let s = sqrt(1 - f²) = sqrt(c0² - 2a0·h - h²),  c0 = sqrt(1-a0²).
+# Write s = Σ B[k] h^k.  From s² = c0² - 2a0·h - h²:
+#   B[0] = c0
+#   B[n] = (R[n] - Σ_{j=1}^{n-1} B[j]B[n-j]) / (2c0),
+#          R[1]=-2a0, R[2]=-1, R[n≥3]=0
+#
+# From s·(dg/dh) = 1  (power-series convolution):
+#   A[1] = 1/c0
+#   A[n+1] = -Σ_{j=1}^{n} B[j]·(n-j+1)·A[n-j+1] / ((n+1)·c0)
+#
+# Complexity: O(order²) scalar ops, then one loop of order CTPS mul!/add —
+# identical structure to sin/cos, zero inner CTPS calls.
+@inline function _asin_coeffs(a0::T, order::Int) where T
+    c0     = Base.sqrt(one(T) - a0 * a0)
+    inv_c0 = one(T) / c0
+
+    # B[k+1] stores mathematical B[k],  k = 0..order
+    B = Vector{T}(undef, order + 1)
+    B[1] = c0
+    inv_2c0 = inv_c0 / 2
+    for n in 1:order
+        R = n == 1 ? T(-2) * a0 : (n == 2 ? -one(T) : zero(T))
+        s = zero(T)
+        for j in 1:n-1
+            s += B[j+1] * B[n-j+1]
+        end
+        B[n+1] = (R - s) * inv_2c0
+    end
+
+    # A[k] stores A[k],  k = 1..order
+    A = Vector{T}(undef, order)
+    order == 0 && return A
+    A[1] = inv_c0
+    for n in 1:order-1
+        s = zero(T)
+        for j in 1:n
+            s += B[j+1] * T(n - j + 1) * A[n-j+1]
+        end
+        A[n+1] = -s * inv_c0 / T(n + 1)
+    end
+    return A
+end
+
 # arcsin
 function asin(ctps::CTPS{T}) where T
-    temp = CTPS(ctps)
     a0 = cst(ctps)
-    arcsin_a0 = asin(a0)
-    cos_y0 = sqrt(one(T) - a0 ^ 2)
-    temp = temp - a0
-    temp1 = CTPS(temp)
-    # Newton's method on TPSA doubles order-of-accuracy each step;
-    # ⌈log₂(order+2)⌉ + 2 iterations are sufficient (vs the previous order+10).
-    niters = max(3, ceil(Int, log2(ctps.desc.order + 2)))
-    for i in 1:niters
-        temp1 = temp1 - sin(temp1) + (temp + a0*(1.0-cos(temp1)))/cos_y0
+    T <: Real && abs(a0) >= one(T) && error("asin domain error: |constant term| must be < 1")
+    asin_a0 = Base.asin(a0)
+    desc    = ctps.desc
+    order   = desc.order
+
+    A = _asin_coeffs(a0, order)
+
+    temp = CTPS(ctps)
+    temp.c[1] -= a0
+    temp.degree_mask[] &= ~UInt64(1)
+
+    term      = _ctps_constant(one(T), desc)
+    term_next = _ctps_zero(T, desc)      # pre-allocated; swapped each iteration
+    sum       = _ctps_zero(T, desc)
+
+    for i in 1:order
+        mul!(term_next, term, temp)
+        term, term_next = term_next, term  # swap — zero-cost
+        _add_scaled!(sum, term, A[i])
     end
-    return temp1 + arcsin_a0
+    sum.c[1] = asin_a0
+    sum.degree_mask[] |= UInt64(1)
+    return sum
+end
+
+function asin!(result::CTPS{T}, ctps::CTPS{T}) where T
+    a0 = cst(ctps)
+    T <: Real && abs(a0) >= one(T) && error("asin domain error: |constant term| must be < 1")
+    asin_a0 = Base.asin(a0)
+    desc    = ctps.desc
+    order   = desc.order
+
+    A = _asin_coeffs(a0, order)
+
+    _zero_active!(result)
+
+    (idx_temp, temp) = _ctps_pooled_copy(ctps, desc)
+    temp.c[1] -= a0
+    temp.degree_mask[] &= ~UInt64(1)
+
+    (idx_term, term) = _ctps_pooled(T, desc)
+    term.c[1] = one(T)
+    term.degree_mask[] = UInt64(1)
+
+    (idx_tn, term_next) = _ctps_pooled(T, desc)
+
+    for i in 1:order
+        mul!(term_next, term, temp)
+        copy!(term, term_next)
+        _add_scaled!(result, term, A[i])
+    end
+    result.c[1] = asin_a0
+    result.degree_mask[] |= UInt64(1)
+    _pool_release!(idx_temp, temp,      desc)
+    _pool_release!(idx_term, term,      desc)
+    _pool_release!(idx_tn,   term_next, desc)
+    return result
 end
 
 # arccos
 function acos(ctps::CTPS{T}) where T
-    return T(pi / 2) - asin(ctps)
+    return T(π / 2) - asin(ctps)
+end
+
+function acos!(result::CTPS{T}, ctps::CTPS{T}) where T
+    asin!(result, ctps)          # result = asin(ctps)
+    scale!(result, -one(T))      # result = -asin(ctps);  degree_mask unchanged
+    result.c[1] += T(π / 2)     # result = π/2 - asin(ctps) = acos(ctps)
+    result.degree_mask[] |= UInt64(1)  # degree-0 term is always non-zero
+    return result
 end
 
 # tangent: shares one power-series loop for both sin and cos
