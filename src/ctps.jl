@@ -31,10 +31,24 @@ MulSchedule2D() = MulSchedule2D(Matrix{Int32}(undef, 0, 0),
                                   Int32(0), Int32(0), Int32(0),
                                   Int32(0), Int32(0), 0x00, 0x00)
 
-# Composition plan for efficient function composition
+# Composition plan — precomputed parent-monomial tree for compose!/compose.
+#
+# For each monomial index i (2..N), the image under a substitution map g is:
+#   mono_image[i] = g[par_var[i]] * mono_image[par_idx[i]]
+# so every monomial image costs exactly one mul! call.
+# The root mono_image[1] = CTPS(1.0) (the constant-1 monomial).
+#
+# Parent choice: first variable (lowest index) with a non-zero exponent in α.
+# This yields a balanced tree and guarantees that par_idx[i] < i (deglex order),
+# so a single forward pass through [2..N] builds all images correctly.
+#
+# n_children[i] = number of j > i with par_idx[j] == i.
+# Used in compose! to release images early (set to nothing) once all children
+# are processed — equivalent to reference counting, O(1) per monomial.
 struct CompPlan
-    # Placeholder for composition optimization data
-    data::Vector{Int}
+    par_idx    :: Vector{Int32}   # parent monomial index (1-based); element 1 unused
+    par_var    :: Vector{Int8}    # which variable to multiply (1-based); element 1 unused
+    n_children :: Vector{Int32}   # number of monomials j with par_idx[j] == i
 end
 
 # Thread-local pool of pre-allocated Float64 coefficient buffers.
@@ -189,8 +203,8 @@ function PSDesc(nv::Int, order::Int)
             end
         end
         
-        # Create composition plan (placeholder)
-        comp_plan = CompPlan(Int[])
+        # Build composition plan (parent-monomial tree for compose!/compose)
+        comp_plan = build_comp_plan(polymap, exp_to_idx, nv, N)
 
         # Pre-allocate per-thread coefficient buffer pools (Float64 only)
         pools = [DescPool(N) for _ in 1:Threads.nthreads()]
@@ -243,6 +257,45 @@ function build_mul_schedule_2d(polymap::PolyMap, exp_to_idx::Dict,
                          Int32(i_start), Int32(j_start), Int32(k_start),
                          Int32(Ni), Int32(Nj),
                          UInt8(di), UInt8(dj))
+end
+
+# Build the composition plan: for each monomial index i (2..N) find the
+# lowest-index variable v with αᵥ > 0, record par_idx[i] (the parent monomial
+# after decrementing αᵥ) and par_var[i] = v.
+#
+# The polymap stores ALL variable exponents: map[i, 1] = total degree,
+# map[i, v+1] = αᵥ for v = 1..nv  (last column = αₙᵥ, NOT always 0).
+function build_comp_plan(polymap::PolyMap, exp_to_idx::Dict, nv::Int, N::Int)
+    K          = nv + 1
+    par_idx    = zeros(Int32, N)
+    par_var    = zeros(Int8,  N)
+    n_children = zeros(Int32, N)
+
+    @inbounds for i in 2:N
+        # Find first variable v (1-based) with αᵥ > 0
+        v_found = 0
+        for v in 1:nv
+            if polymap.map[i, v + 1] > 0
+                v_found = v
+                break
+            end
+        end
+        # v_found ≥ 1 is guaranteed: total degree ≥ 1 for all i ≥ 2
+
+        # Build parent exponent key: decrement total (col 1) and αᵥ (col v+1)
+        par_exp = SVector{K, UInt8}(
+            col == 1           ? UInt8(polymap.map[i, 1]           - 1) :
+            col == v_found + 1 ? UInt8(polymap.map[i, v_found + 1] - 1) :
+            polymap.map[i, col]
+            for col in 1:K)
+
+        pi = Int(exp_to_idx[par_exp])
+        par_idx[i]    = Int32(pi)
+        par_var[i]    = Int8(v_found)
+        n_children[pi] += Int32(1)
+    end
+
+    return CompPlan(par_idx, par_var, n_children)
 end
 
 # CTPS — two fields only; the descriptor is NOT stored per-instance.
@@ -638,24 +691,31 @@ end
     return ctps.c[result]
 end
 
-# Defining callable instance
+# Defining callable instance — evaluate the CTPS polynomial at numerical args.
+#
+# Efficiency improvements over a naive loop:
+#   • degree_mask limits the active coefficient range (skips trailing zero blocks)
+#   • per-term zero check avoids nv exponent lookups for zero coefficients
+#   • descriptor lookup hoisted outside the loop
 function (ctps::CTPS{T})(args::T...) where T
-    # Descriptor lookup outside the loop — avoids repeated global Ref access
-    # through the virtual getproperty, whose Union{PSDesc,Nothing} return type
-    # causes Enzyme to expand both branches on every loop iteration.
-    desc = ctps.desc::PSDesc
+    desc = ctps.desc::PSDesc   # hoisted: avoids repeated Union{PSDesc,Nothing} access
     nv   = desc.nv
-    if length(args) != nv
+    length(args) == nv ||
         error("Number of arguments does not match the number of variables in the CTPS")
-    end
 
-    return_value = ctps.c[1]  # Start with the constant term
-    pm = desc.polymap.map     # Get the polymap matrix for exponent lookups
-    @inbounds for i in 2:length(ctps.c)
+    mask = ctps.degree_mask[]
+    mask == 0 && return zero(T)   # identically-zero polynomial fast path
+
+    pm         = desc.polymap.map
+    (lo, hi)   = active_range_bounds(desc, mask)  # skip zero degree blocks
+    return_value = (mask & UInt64(1)) != 0 ? ctps.c[1] : zero(T)
+
+    @inbounds for i in max(lo, 2):hi
         val = ctps.c[i]
+        iszero(val) && continue       # skip zero coefficients early
         for v in 1:nv
-            e = Int(pm[i, v + 1]) # Enzyme likes Int better
-            e == 0 && continue # Skip multipling by 1
+            e = Int(pm[i, v + 1])     # Enzyme prefers Int
+            e == 0 && continue
             val *= args[v]^e
         end
         return_value += val
@@ -1149,7 +1209,7 @@ function mul!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
                      (63 - leading_zeros(mask2)) % Int, order)
         if dk_min > dk_max
             result.degree_mask[] = UInt64(0)
-            return result
+            return nothing
         end
         out_s = desc.off[dk_min + 1]
         out_e = desc.off[dk_max + 1] + desc.Nd[dk_max + 1] - 1
@@ -1230,6 +1290,101 @@ function mul!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
 
     result.degree_mask[] = compose_degree_mask(mask1, mask2, order)
     return nothing
+end
+
+# ── CTPS Composition ─────────────────────────────────────────────────────────
+#
+# compose!(result, f, g) computes  h(x) = f(g[1](x), …, g[nv](x))  in-place.
+#
+# Algorithm — parent-monomial tree  (O(N) mul! calls, one per monomial):
+#
+#   mono_img[1] = CTPS(1.0)                               # constant monomial
+#   mono_img[i] = g[par_var[i]] * mono_img[par_idx[i]]   # one mul! per i ≥ 2
+#   result       = Σᵢ  f.c[i] * mono_img[i]              # via _add_scaled!
+#
+# par_idx / par_var are precomputed in desc.comp_plan at descriptor construction
+# time (build_comp_plan).  Each monomial image is computed exactly once.
+#
+# Memory: mono_img[i] is set to `nothing` as soon as all its children are
+# processed (reference counting via n_children), so the peak live image count
+# ≈ max(Nd[dk-1] + Nd[dk]) over all degrees — O(N/order) rather than O(N).
+#
+function compose!(result::CTPS{T}, f::CTPS{T}, g::AbstractVector{<:CTPS{T}}) where T
+    desc  = f.desc
+    nv    = desc.nv
+    N     = desc.N
+    fm    = f.degree_mask[]
+    plan  = desc.comp_plan
+
+    length(g) == nv ||
+        error("compose!: expected $nv substitution polynomials, got $(length(g))")
+
+    _zero_active!(result)
+    fm == 0 && return result     # f is the zero polynomial
+
+    # Constant term: result += f.c[1]
+    if (fm & UInt64(1)) != 0 && !iszero(f.c[1])
+        result.c[1]        = f.c[1]
+        result.degree_mask[] |= UInt64(1)
+    end
+
+    par_idx    = plan.par_idx
+    par_var    = plan.par_var
+    # Mutable per-call copy of n_children for in-place reference counting
+    ref_cnt    = copy(plan.n_children)
+
+    # mono_img[i] = g^(α_i)  — the image of the i-th monomial under g.
+    # Type Any allows setting to `nothing` for early GC release while keeping
+    # the ::CTPS{T} type assert on access for zero-overhead dispatch.
+    mono_img = Vector{Any}(nothing, N)
+    mono_img[1] = _ctps_constant(one(T), desc)
+
+    @inbounds for i in 2:N
+        pv     = Int(par_var[i])
+        pi     = Int(par_idx[i])
+        parent = mono_img[pi]::CTPS{T}
+
+        img = _ctps_zero(T, desc)
+        mul!(img, g[pv], parent)
+        mono_img[i] = img
+
+        coeff = f.c[i]
+        iszero(coeff) || _add_scaled!(result, img, coeff)
+
+        # Release parent once all its children have been processed
+        ref_cnt[pi] -= Int32(1)
+        if ref_cnt[pi] == 0
+            mono_img[pi] = nothing    # eligible for GC
+        end
+    end
+
+    return result
+end
+
+"""
+    compose(f::CTPS{T}, g::AbstractVector{<:CTPS{T}}) -> CTPS{T}
+
+Compose `f` with the substitution map `g`:
+
+    h(x) = f(g[1](x), g[2](x), …, g[nv](x))
+
+Uses the precomputed parent-monomial tree in `desc.comp_plan` so that each
+monomial image is built with exactly **one** `mul!` call — O(N) multiplications
+total where N = total number of coefficient basis monomials.
+
+# Example
+```julia
+set_descriptor!(2, 3)
+x = CTPS(0.0, 1);  y = CTPS(0.0, 2)
+f  = x^2 + y              # f(x,y) = x² + y
+g1 = x + y;  g2 = x - y   # substitution map g: (x,y) ↦ (x+y, x-y)
+h  = compose(f, [g1, g2]) # h(x,y) = (x+y)² + (x-y) = x²+2xy+y²+x-y
+```
+"""
+function compose(f::CTPS{T}, g::AbstractVector{<:CTPS{T}}) where T
+    result = _ctps_zero(T, f.desc)
+    compose!(result, f, g)
+    return result
 end
 
 # + (range-limited: only touches active degree range)
