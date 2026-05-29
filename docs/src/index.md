@@ -95,7 +95,7 @@ or used only in the advanced zero-allocation API.
 
 All operators create a new `CTPS`:
 
-```
+```text
 f + g,  f - g,  f * g,  -f,  f^n   (n::Int)
 f + a,  a + f,  f - a,  a - f,  a*f,  f*a   (a::Real)
 ```
@@ -255,12 +255,12 @@ no user-side setup required.
    (`exp!`, `sin!`, `mul!`, etc.) write into workspace-pool slots, which
    involves mutation that Enzyme cannot trace through.
 
-See [`examples/07_enzyme_ad.jl`](../examples/07_enzyme_ad.jl) for worked examples
+See `examples/07_enzyme_ad.jl` in the package directory for worked examples
 including multi-output Jacobians and finite-difference verification.
 
 ## Contents
 
 - [Tutorial](tutorial.md) — step-by-step examples
 - [API Reference](api.md) — complete function and type documentation
-- [`examples/`](../examples/) — runnable Julia scripts
-- [`benchmarks/`](../benchmarks/) — performance measurement scripts
+- `examples/` — runnable Julia scripts
+- `benchmarks/` — performance measurement scripts

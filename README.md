@@ -2,7 +2,7 @@
 
 **Truncated Power Series Algebra for Julia**
 
-PolySeries.jl computes multivariate Taylor expansions of arbitrary functions to high orders. It overloads all standard arithmetic operators and transcendental functions so that code written for ordinary `Float64` scalars also works for `CTPS` objects — producing exact Taylor series rather than single numbers.
+PolySeries.jl computes multivariate Taylor expansions of arbitrary functions to high orders. It overloads all standard arithmetic operators and transcendental functions so that code written for ordinary `Float64` scalars also works for `CTPS` objects (struct of PolySeries) — producing exact Taylor series rather than single numbers.
 
 ## Highlights
 

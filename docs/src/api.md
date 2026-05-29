@@ -303,10 +303,10 @@ entry 1 is the total degree, entries 2…dim+1 are per-variable exponents.
 ## See also
 
 - [Tutorial](tutorial.md) — worked examples for all features
-- [index.md](index.md) — overview, performance notes, and Enzyme interoperability guide
-- [`examples/`](../examples/) — complete runnable scripts
-- [`examples/07_enzyme_ad.jl`](../examples/07_enzyme_ad.jl) — nested AD with Enzyme
-- [`benchmarks/`](../benchmarks/) — performance measurement scripts
+- [Home](index.md) — overview, performance notes, and Enzyme interoperability guide
+- `examples/` — complete runnable scripts
+- `examples/07_enzyme_ad.jl` — nested AD with Enzyme
+- `benchmarks/` — performance measurement scripts
 
 ---
 
@@ -374,5 +374,5 @@ end
 Enzyme.gradient(Reverse, f_mv, 0.7)
 ```
 
-See [`examples/07_enzyme_ad.jl`](../examples/07_enzyme_ad.jl) for a complete
+See `examples/07_enzyme_ad.jl` in the package directory for a complete
 worked example with finite-difference verification.

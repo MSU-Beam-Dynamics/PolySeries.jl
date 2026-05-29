@@ -250,6 +250,6 @@ end
 
 ## Next steps
 
-- See [api.md](api.md) for the complete function reference.
+- See [API Reference](api.md) for the complete function reference.
 - See the `examples/` directory for self-contained runnable scripts.
 - Run the scripts in `benchmarks/` to measure performance on your own hardware.
