@@ -39,19 +39,21 @@ Decomposes an integer n into a vector of length dim + 1 representing exponents.
 
 # Examples
 ```jldoctest
-julia> decomposite(0, 2)
+julia> using PolySeries
+
+julia> PolySeries.decomposite(0, 2)
 3-element Vector{Int64}:
  0
  0
  0
 
-julia> decomposite(1, 2)
+julia> PolySeries.decomposite(1, 2)
 3-element Vector{Int64}:
  1
  1
  0
 
-julia> decomposite(3, 2)
+julia> PolySeries.decomposite(3, 2)
 3-element Vector{Int64}:
  2
  2

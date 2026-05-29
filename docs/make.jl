@@ -4,8 +4,9 @@ using PolySeries
 makedocs(
     sitename = "PolySeries.jl",
     format = Documenter.HTML(
-        prettyurls = get(ENV, "CI", nothing) == "true",
+        prettyurls = true,
         mathengine = Documenter.MathJax3(),
+        edit_link = "main",
     ),
     modules = [PolySeries],
     warnonly = [:missing_docs],
@@ -18,5 +19,6 @@ makedocs(
 
 deploydocs(
     repo = "github.com/MSU-Beam-Dynamics/PolySeries.jl.git",
+    branch = "gh-pages",
     devbranch = "main",
 )

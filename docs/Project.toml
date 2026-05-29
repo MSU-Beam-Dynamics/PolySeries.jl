@@ -1,5 +1,6 @@
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+PolySeries = "6f3fcde8-8165-4326-91a7-f7698485e8a3"
 
 [compat]
 Documenter = "1"
