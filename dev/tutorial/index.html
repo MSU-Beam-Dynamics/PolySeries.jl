@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Tutorial · PolySeries.jl</title><meta name="title" content="Tutorial · PolySeries.jl"/><meta property="og:title" content="Tutorial · PolySeries.jl"/><meta property="twitter:title" content="Tutorial · PolySeries.jl"/><meta name="description" content="Documentation for PolySeries.jl."/><meta property="og:description" content="Documentation for PolySeries.jl."/><meta property="twitter:description" content="Documentation for PolySeries.jl."/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">PolySeries.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li class="is-active"><a class="tocitem" href>Tutorial</a><ul class="internal"><li><a class="tocitem" href="#1.-Setup"><span>1. Setup</span></a></li><li><a class="tocitem" href="#2.-Creating-TPSA-Objects"><span>2. Creating TPSA Objects</span></a></li><li><a class="tocitem" href="#3.-Arithmetic"><span>3. Arithmetic</span></a></li><li><a class="tocitem" href="#4.-Mathematical-Functions"><span>4. Mathematical Functions</span></a></li><li><a class="tocitem" href="#5.-Accessing-Coefficients"><span>5. Accessing Coefficients</span></a></li><li><a class="tocitem" href="#6.-Extracting-Derivatives-and-the-Jacobian"><span>6. Extracting Derivatives and the Jacobian</span></a></li><li><a class="tocitem" href="#7.-Zero-Allocation-In-Place-Operations"><span>7. Zero-Allocation In-Place Operations</span></a></li><li><a class="tocitem" href="#8.-The-@tpsa-Macro"><span>8. The <code>@tpsa</code> Macro</span></a></li><li><a class="tocitem" href="#9.-Thread-Safety"><span>9. Thread Safety</span></a></li><li><a class="tocitem" href="#Next-steps"><span>Next steps</span></a></li></ul></li><li><a class="tocitem" href="../api/">API Reference</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href>Tutorial</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Tutorial</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/MSU-Beam-Dynamics/PolySeries.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/MSU-Beam-Dynamics/PolySeries.jl/blob/main/docs/src/tutorial.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="PolySeries.jl-Tutorial"><a class="docs-heading-anchor" href="#PolySeries.jl-Tutorial">PolySeries.jl Tutorial</a><a id="PolySeries.jl-Tutorial-1"></a><a class="docs-heading-anchor-permalink" href="#PolySeries.jl-Tutorial" title="Permalink"></a></h1><p>A step-by-step introduction to the key features of PolySeries.jl.</p><hr/><h2 id="1.-Setup"><a class="docs-heading-anchor" href="#1.-Setup">1. Setup</a><a id="1.-Setup-1"></a><a class="docs-heading-anchor-permalink" href="#1.-Setup" title="Permalink"></a></h2><p>Every session starts by registering a <strong>global descriptor</strong> that defines the number of variables and the maximum polynomial order.  All <code>CTPS</code> objects created afterward share this metadata automatically.</p><pre><code class="language-julia hljs">using PolySeries
+
+set_descriptor!(4, 6)   # 4 variables, maximum order 6
+desc = get_descriptor()
+println(&quot;Coefficients per series: &quot;, desc.N)   # → 210</code></pre><hr/><h2 id="2.-Creating-TPSA-Objects"><a class="docs-heading-anchor" href="#2.-Creating-TPSA-Objects">2. Creating TPSA Objects</a><a id="2.-Creating-TPSA-Objects-1"></a><a class="docs-heading-anchor-permalink" href="#2.-Creating-TPSA-Objects" title="Permalink"></a></h2><pre><code class="language-julia hljs"># Independent variables (expansion point = 0.0, index = 1..nv)
+x1 = CTPS(0.0, 1)
+x2 = CTPS(0.0, 2)
+x3 = CTPS(0.0, 3)
+x4 = CTPS(0.0, 4)
+
+# Constant (scalar packaged as a CTPS)
+c = CTPS(3.14)
+
+# Zero CTPS — useful as a pre-allocated output slot
+buf = CTPS(Float64)</code></pre><p><code>CTPS(a, i)</code> creates the identity map variable <span>$x_i$</span> expanded around <span>$a$</span>:   <span>$x_i(\delta) = a + \delta_i$</span> Its coefficient vector satisfies <code>c[1] = a</code> and <code>c[i+1] = 1</code>.</p><hr/><h2 id="3.-Arithmetic"><a class="docs-heading-anchor" href="#3.-Arithmetic">3. Arithmetic</a><a id="3.-Arithmetic-1"></a><a class="docs-heading-anchor-permalink" href="#3.-Arithmetic" title="Permalink"></a></h2><p>Standard Julia operators work naturally:</p><pre><code class="language-julia hljs">f = x1^2 + 2*x1*x2 + x2^2    # (x1 + x2)²
+g = (1 + x1)*(1 + x2)         # 1 + x1 + x2 + x1*x2
+h = 3*x1 - x2/2               # mixed scalar/CTPS
+k = g^3                        # integer power via binary exponentiation</code></pre><p>All operations return a new <code>CTPS</code>; the inputs are not modified.</p><hr/><h2 id="4.-Mathematical-Functions"><a class="docs-heading-anchor" href="#4.-Mathematical-Functions">4. Mathematical Functions</a><a id="4.-Mathematical-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#4.-Mathematical-Functions" title="Permalink"></a></h2><p>Transcendental functions expand automatically in Taylor series around the constant term:</p><pre><code class="language-julia hljs">set_descriptor!(2, 8)
+x = CTPS(0.0, 1)
+y = CTPS(0.0, 2)
+
+e_x   = exp(x)              # e^x through order 8
+s_y   = sin(y)              # sin(y) through order 8
+cs    = cos(x) * sin(y)
+lg    = log(1 + x)          # ln(1+x)
+sq    = sqrt(1 + x)         # √(1+x)
+sh    = sinh(x) + cosh(x)   # should equal exp(x)
+
+# Also available: tan, asin, acos, pow(f, n::Int)</code></pre><hr/><h2 id="5.-Accessing-Coefficients"><a class="docs-heading-anchor" href="#5.-Accessing-Coefficients">5. Accessing Coefficients</a><a id="5.-Accessing-Coefficients-1"></a><a class="docs-heading-anchor-permalink" href="#5.-Accessing-Coefficients" title="Permalink"></a></h2><p>Coefficients are stored in <code>ctps.c</code> indexed by degree-lexicographic order.   Use <code>findindex</code> or <code>element</code> to look up a specific monomial by its exponent vector:</p><pre><code class="language-julia hljs">set_descriptor!(3, 4)
+x = CTPS(0.0, 1);  y = CTPS(0.0, 2);  z = CTPS(0.0, 3)
+
+f = (x + y + z)^2   # = x²+y²+z²+2xy+2xz+2yz
+
+# Exponent vectors have length nv; entries are per-variable powers
+idx_x2  = findindex(f, [2, 0, 0])   # x²
+idx_xy  = findindex(f, [1, 1, 0])   # xy
+idx_xyz = findindex(f, [0, 0, 0])   # constant term
+
+println(f.c[idx_x2],  &quot; (expected 1.0)&quot;)
+println(f.c[idx_xy],  &quot; (expected 2.0)&quot;)
+println(f.c[idx_xyz], &quot; (expected 0.0)&quot;)
+
+# Shorthand
+println(element(f, [2, 0, 0]))   # same as f.c[idx_x2]
+println(cst(f))                  # constant term (index 1)</code></pre><p>To iterate over all non-zero terms, use the <code>PolyMap</code>:</p><pre><code class="language-julia hljs">desc = f.desc
+for i in 1:desc.N
+    v = f.c[i]
+    iszero(v) &amp;&amp; continue
+    exps = PolySeries.getindexmap(desc.polymap, i)   # returns view [degree, e1, e2, e3]
+    println(&quot;degree=&quot;, exps[1], &quot; exponents=&quot;, exps[2:end], &quot; coeff=&quot;, v)
+end</code></pre><hr/><h2 id="6.-Extracting-Derivatives-and-the-Jacobian"><a class="docs-heading-anchor" href="#6.-Extracting-Derivatives-and-the-Jacobian">6. Extracting Derivatives and the Jacobian</a><a id="6.-Extracting-Derivatives-and-the-Jacobian-1"></a><a class="docs-heading-anchor-permalink" href="#6.-Extracting-Derivatives-and-the-Jacobian" title="Permalink"></a></h2><p>Because the coefficients <em>are</em> the Taylor coefficients, derivatives come for free:</p><p class="math-container">\[\frac{\partial^{|\alpha|} f}{\partial x^\alpha}\bigg|_0 = \alpha!\; c_\alpha\]</p><pre><code class="language-julia hljs">set_descriptor!(2, 4)
+x = CTPS(0.0, 1);  y = CTPS(0.0, 2)
+
+f = x^3 + 2*x^2*y + x*y^2 + y^3
+
+# ∂f/∂x at 0:  coefficient of x¹ times 1! = 3!*0 + ... (only pure x^3 contributes nothing linear)
+# Linear terms are at degree 1
+idx_x = findindex(f, [1, 0])   # x¹ coefficient = ∂f/∂x|₀
+idx_y = findindex(f, [0, 1])   # y¹ coefficient = ∂f/∂y|₀
+println(&quot;∂f/∂x|0 = &quot;, f.c[idx_x])   # 0 (no linear x term)
+println(&quot;∂f/∂y|0 = &quot;, f.c[idx_y])   # 0
+
+# Build the Jacobian of a 4D map (linear part only)
+set_descriptor!(4, 3)
+x1 = CTPS(0.0,1); x2 = CTPS(0.0,2); x3 = CTPS(0.0,3); x4 = CTPS(0.0,4)
+
+nx1 = x1 + 0.1*x3
+nx2 = x2 + 0.1*x4
+nx3 = -0.5*x1 + x3
+nx4 = -0.5*x2 + x4
+
+outputs = [nx1, nx2, nx3, nx4]
+J = [element(outputs[r], [i==c ? 1 : 0 for i in 1:4]) for r in 1:4, c in 1:4]
+println(&quot;Jacobian:&quot;)
+display(J)</code></pre><hr/><h2 id="7.-Zero-Allocation-In-Place-Operations"><a class="docs-heading-anchor" href="#7.-Zero-Allocation-In-Place-Operations">7. Zero-Allocation In-Place Operations</a><a id="7.-Zero-Allocation-In-Place-Operations-1"></a><a class="docs-heading-anchor-permalink" href="#7.-Zero-Allocation-In-Place-Operations" title="Permalink"></a></h2><p>For performance-critical loops (e.g. long-term tracking), allocating new <code>CTPS</code> objects at every step is expensive.  PolySeries.jl provides in-place primitives and a workspace pool.</p><h3 id="In-place-arithmetic"><a class="docs-heading-anchor" href="#In-place-arithmetic">In-place arithmetic</a><a id="In-place-arithmetic-1"></a><a class="docs-heading-anchor-permalink" href="#In-place-arithmetic" title="Permalink"></a></h3><pre><code class="language-julia hljs">set_descriptor!(4, 10)
+desc = get_descriptor()
+
+a = CTPS(0.0, 1);  b = CTPS(0.0, 2)
+out = CTPS(Float64)   # pre-allocated output
+
+mul!(out, a, b)                        # out = a * b
+add!(out, a, b)                        # out = a + b
+sub!(out, a, b)                        # out = a - b
+scale!(out, a, 2.0)                    # out = 2*a
+scaleadd!(out, cos(0.5), a, sin(0.5), b)   # out = cos(θ)*a + sin(θ)*b (fused)</code></pre><h3 id="Workspace-pool"><a class="docs-heading-anchor" href="#Workspace-pool">Workspace pool</a><a id="Workspace-pool-1"></a><a class="docs-heading-anchor-permalink" href="#Workspace-pool" title="Permalink"></a></h3><p><code>PSWorkspace</code> pre-allocates a pool of CTPS slots.  <code>borrow!</code> hands out a zeroed slot; <code>release!</code> returns it.</p><pre><code class="language-julia hljs">ws  = PSWorkspace(desc, 16)   # pool of 16 Float64 CTPS objects
+
+t1 = borrow!(ws)
+t2 = borrow!(ws)
+
+mul!(t1, a, a)           # t1 = a²
+mul!(t2, b, b)           # t2 = b²
+sub!(out, t1, t2)        # out = a² - b²
+
+release!(ws, t1)
+release!(ws, t2)
+# out holds the result; ws is back to full capacity</code></pre><h3 id="In-place-math-functions"><a class="docs-heading-anchor" href="#In-place-math-functions">In-place math functions</a><a id="In-place-math-functions-1"></a><a class="docs-heading-anchor-permalink" href="#In-place-math-functions" title="Permalink"></a></h3><p>All major transcendental functions have <code>!</code> variants that write into a pre-allocated output:</p><pre><code class="language-julia hljs">sin!(out, a);   cos!(out, a)
+exp!(out, a);   log!(out, a);   sqrt!(out, a)
+sinh!(out, a);  cosh!(out, a)
+pow!(out, a, 3)   # out = a^3</code></pre><hr/><h2 id="8.-The-@tpsa-Macro"><a class="docs-heading-anchor" href="#8.-The-@tpsa-Macro">8. The <code>@tpsa</code> Macro</a><a id="8.-The-@tpsa-Macro-1"></a><a class="docs-heading-anchor-permalink" href="#8.-The-@tpsa-Macro" title="Permalink"></a></h2><p>For complex expressions, writing the in-place chain manually is tedious.  The <code>@tpsa</code> macro compiles an arithmetic expression into optimal zero-allocation code automatically:</p><pre><code class="language-julia hljs">set_descriptor!(4, 6)
+desc = get_descriptor()
+ws   = PSWorkspace(desc, 20)
+
+x1 = CTPS(0.0,1); x2 = CTPS(0.0,2)
+x3 = CTPS(0.0,3); x4 = CTPS(0.0,4)
+
+μ  = 2π * 0.205
+nx1 = CTPS(0.0, 1)   # pre-allocated output
+
+# Expands to a series of mul!/add!/sub! calls — zero heap allocations
+@tpsa ws  nx1 = cos(μ)*x1 + sin(μ)*(x2 + x1^2 - x3^2)</code></pre><p><strong>Rules:</strong></p><ul><li>The second argument must be an assignment <code>lhs = rhs</code>.</li><li><code>lhs</code> must be a pre-allocated <code>CTPS</code> object.</li><li>Supported ops: <code>+</code>, <code>-</code>, <code>*</code>, unary <code>-</code>, <code>^n</code> (Int), <code>sin</code>, <code>cos</code>, <code>exp</code>, <code>log</code>, <code>sqrt</code>, <code>sinh</code>, <code>cosh</code>.</li><li>Scalars (<code>Real</code>) may appear as either operand to <code>+</code>, <code>-</code>, <code>*</code>.</li></ul><hr/><h2 id="9.-Thread-Safety"><a class="docs-heading-anchor" href="#9.-Thread-Safety">9. Thread Safety</a><a id="9.-Thread-Safety-1"></a><a class="docs-heading-anchor-permalink" href="#9.-Thread-Safety" title="Permalink"></a></h2><p>Each thread should use its own descriptor and workspace:</p><pre><code class="language-julia hljs">using Base.Threads
+
+results = Vector{Float64}(undef, nthreads())
+@threads for tid in 1:nthreads()
+    set_descriptor!(4, 6)           # thread-local initialization
+    desc = get_descriptor()
+    ws   = PSWorkspace(desc, 16)
+    # ... compute ...
+end</code></pre><hr/><h2 id="Next-steps"><a class="docs-heading-anchor" href="#Next-steps">Next steps</a><a id="Next-steps-1"></a><a class="docs-heading-anchor-permalink" href="#Next-steps" title="Permalink"></a></h2><ul><li>See <a href="../api/">API Reference</a> for the complete function reference.</li><li>See the <code>examples/</code> directory for self-contained runnable scripts.</li><li>Run the scripts in <code>benchmarks/</code> to measure performance on your own hardware.</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../">« Home</a><a class="docs-footer-nextpage" href="../api/">API Reference »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Friday 29 May 2026 20:56">Friday 29 May 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
