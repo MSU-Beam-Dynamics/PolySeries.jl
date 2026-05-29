@@ -42,9 +42,10 @@ println(element(f, [1, 2]))   # → -0.5
 
 | Page | Description |
 |------|-------------|
-| [Tutorial](tutorial.md) | Step-by-step walkthrough of all key features |
-| [API Reference](api.md) | Complete function and type documentation |
-| [Enzyme guide](examples/07_enzyme_ad.jl) | Combining TPSA with Enzyme.jl for nested AD |
+| [Home](https://msu-beam-dynamics.github.io/PolySeries.jl/dev/) | Overview and quick start |
+| [Tutorial](https://msu-beam-dynamics.github.io/PolySeries.jl/dev/tutorial/) | Step-by-step walkthrough of all key features |
+| [API Reference](https://msu-beam-dynamics.github.io/PolySeries.jl/dev/api/) | Complete function and type documentation |
+
 
 ## Quick reference
 
