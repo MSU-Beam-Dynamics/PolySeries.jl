@@ -3,7 +3,7 @@
 #
 # Author: Jinyu Wan, initial version
 #          Yue Hao and Kelly Anderson
-# Version: 1.0
+
 # Created Date: 11-01-2023
 # Modified Date: 03-01-2026
 

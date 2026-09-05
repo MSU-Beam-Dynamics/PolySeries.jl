@@ -1,14 +1,4 @@
-# ==============================================================================
-# This file is part of the PolySeries.jl Julia package.
-#
-# Author: Jinyu Wan
-# Email: wan@frib.msu.edu
-# Version: 1.0
-# Created Date: 11-01-2023
-# Modified Date: 11-06-2023
 
-
-# using Zygote
 
 struct PolyMap
     dim::Int
