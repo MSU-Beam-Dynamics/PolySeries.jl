@@ -253,12 +253,13 @@ release!(ws, t)                # return t to pool (active range zeroed)
 Compiles `expr` into a sequence of zero-allocation in-place calls, writing the
 final result into the pre-allocated `CTPS` object `lhs`.  Temporaries are
 borrowed from `ws::PSWorkspace` and released as soon as they are no longer
-needed.
+needed, including when evaluation throws. Slots borrowed by the caller remain
+untouched; the output may be partially written on failure.
 
 **Supported operations in `expr`:**
 `+`, `-`, `*`, unary `-`, `^n` (integer `n`),
 `sin`, `cos`, `exp`, `log`, `sqrt`, `sinh`, `cosh`.
-Scalars (`Real`) may appear as either operand to `+`, `-`, `*`.
+Scalars (`Real`) may appear as either operand to `+`, `-`, `*`, and as arguments to the supported unary functions.
 
 **Restrictions:**
 - `lhs` must be a pre-allocated `CTPS` object.

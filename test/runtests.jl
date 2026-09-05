@@ -38,6 +38,10 @@ using PolySeries
         include("degree_mask_tests.jl")
     end
 
+    @testset "TPSA Macro" begin
+        include("macro_tests.jl")
+    end
+
     @testset "Composition" begin
         include("composition_tests.jl")
     end

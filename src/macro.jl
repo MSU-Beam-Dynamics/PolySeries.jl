@@ -13,7 +13,7 @@
 # Supported operations in `expr`:
 #   a + b, a - b, a * b, -a, a^n (integer)
 #   sin(a), cos(a), exp(a), log(a), sqrt(a), sinh(a), cosh(a)
-#   Scalar (Real) values may appear as either argument to +, -, *.
+#   Scalar (Real) values may appear in +, -, * and supported unary calls.
 #
 # The macro is NOT appropriate for:
 #   - Assignments where lhs appears on the rhs (self-referential expressions)
@@ -99,6 +99,23 @@ end
     out.degree_mask[] = _prunable_zero(val) ? UInt64(0) : UInt64(1)
 end
 
+# Scalar unary calls evaluate in their original scalar type, then store a
+# constant polynomial. CTPS arguments keep the existing in-place kernels.
+for f in (:sin, :cos, :exp, :log, :sqrt, :sinh, :cosh)
+    helper = Symbol("_tpsa_", f, "!")
+    kernel = Symbol(f, "!")
+    @eval begin
+        @inline $helper(out::CTPS{T}, a::CTPS{T}) where T = $kernel(out, a)
+        @inline function $helper(out::CTPS{T}, a::Real) where T
+            val = T($f(a))
+            _zero_active!(out)
+            out.c[1] = val
+            out.degree_mask[] = _prunable_zero(val) ? UInt64(0) : UInt64(1)
+            return out
+        end
+    end
+end
+
 # ── AST helpers ───────────────────────────────────────────────────────────────
 
 # Returns true for expression nodes that should be treated as leaf values
@@ -120,6 +137,7 @@ end
 #   ast      — the sub-expression to lower
 #   ws_sym   — the workspace expression (already esc'd)
 #   stmts    — statement list to append generated code to
+#   temporaries — maps borrowed symbols to ownership flags (at macro expansion)
 #   lhs_sym  — when non-nothing, write the result directly into this expression
 #               and return (lhs_sym, false); otherwise borrow a temp and return
 #               (temp_sym, true).
@@ -127,7 +145,7 @@ end
 # Returns: (result_expr, is_borrow::Bool)
 #   result_expr  — expression holding the result
 #   is_borrow    — true if the caller is responsible for releasing result_expr
-function _tpsa_lower_expr(ast, ws_sym, stmts, lhs_sym=nothing)
+function _tpsa_lower_expr(ast, ws_sym, stmts, lhs_sym, temporaries)
     if _tpsa_is_leaf(ast)
         return (esc(ast), false)
     end
@@ -142,7 +160,7 @@ function _tpsa_lower_expr(ast, ws_sym, stmts, lhs_sym=nothing)
             for i in 4:length(ast.args)
                 folded = Expr(:call, f, folded, ast.args[i])
             end
-            return _tpsa_lower_expr(folded, ws_sym, stmts, lhs_sym)
+            return _tpsa_lower_expr(folded, ws_sym, stmts, lhs_sym, temporaries)
         end
     end
 
@@ -160,49 +178,55 @@ function _tpsa_lower_expr(ast, ws_sym, stmts, lhs_sym=nothing)
             return (lhs_sym, false)
         else
             t = gensym("tpsa")
+            live = gensym("tpsa_live")
+            temporaries[t] = live
             push!(stmts, :($t = borrow!($ws_sym)))
+            push!(stmts, :($live = true))
             return (t, true)
         end
     end
 
     # Helper: release a result if it was borrowed
     function maybe_release!(sym, is_tmp)
-        is_tmp && push!(stmts, :(release!($ws_sym, $sym)))
+        if is_tmp
+            push!(stmts, :(release!($ws_sym, $sym)))
+            push!(stmts, :($(temporaries[sym]) = false))
+        end
     end
 
     if f == :+ && na == 2
-        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts)
-        (eb, tb) = _tpsa_lower_expr(ast.args[3], ws_sym, stmts)
+        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts, nothing, temporaries)
+        (eb, tb) = _tpsa_lower_expr(ast.args[3], ws_sym, stmts, nothing, temporaries)
         (out, tout) = get_out()
         push!(stmts, :(_tpsa_add!($out, $ea, $eb)))
         maybe_release!(ea, ta);  maybe_release!(eb, tb)
         return (out, tout)
 
     elseif f == :- && na == 2
-        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts)
-        (eb, tb) = _tpsa_lower_expr(ast.args[3], ws_sym, stmts)
+        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts, nothing, temporaries)
+        (eb, tb) = _tpsa_lower_expr(ast.args[3], ws_sym, stmts, nothing, temporaries)
         (out, tout) = get_out()
         push!(stmts, :(_tpsa_sub!($out, $ea, $eb)))
         maybe_release!(ea, ta);  maybe_release!(eb, tb)
         return (out, tout)
 
     elseif f == :- && na == 1
-        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts)
+        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts, nothing, temporaries)
         (out, tout) = get_out()
         push!(stmts, :(_tpsa_neg!($out, $ea)))
         maybe_release!(ea, ta)
         return (out, tout)
 
     elseif f == :* && na == 2
-        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts)
-        (eb, tb) = _tpsa_lower_expr(ast.args[3], ws_sym, stmts)
+        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts, nothing, temporaries)
+        (eb, tb) = _tpsa_lower_expr(ast.args[3], ws_sym, stmts, nothing, temporaries)
         (out, tout) = get_out()
         push!(stmts, :(_tpsa_mul!($out, $ea, $eb)))
         maybe_release!(ea, ta);  maybe_release!(eb, tb)
         return (out, tout)
 
     elseif f == :^ && na == 2
-        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts)
+        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts, nothing, temporaries)
         n_expr   = esc(ast.args[3])   # exponent: can be literal or variable
         (out, tout) = get_out()
         push!(stmts, :(_tpsa_pow!($out, $ea, $n_expr)))
@@ -210,8 +234,8 @@ function _tpsa_lower_expr(ast, ws_sym, stmts, lhs_sym=nothing)
         return (out, tout)
 
     elseif na == 1 && f in (:sin, :cos, :exp, :log, :sqrt, :sinh, :cosh)
-        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts)
-        f_bang   = Symbol(string(f) * "!")
+        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts, nothing, temporaries)
+        f_bang   = Symbol("_tpsa_", f, "!")
         (out, tout) = get_out()
         push!(stmts, :($f_bang($out, $ea)))
         maybe_release!(ea, ta)
@@ -232,29 +256,23 @@ Compile a TPSA arithmetic expression into zero-allocation in-place code,
 writing the result directly into the pre-allocated CTPS `lhs`.
 
 Temporaries are borrowed from `ws::PSWorkspace` and released automatically
-when no longer needed.  The number of simultaneous borrows equals the peak
+when no longer needed, including when evaluation throws. The output may be
+partially written on failure. The number of simultaneous borrows equals the peak
 number of live intermediates in `expr`.
 
 # Supported operations
 `+`, `-`, `*`, unary `-`, `^n` (Int), `sin`, `cos`, `exp`, `log`, `sqrt`,
 `sinh`, `cosh`.  Scalar (Real) values may appear as either operand to `+`,
-`-`, `*`.
+`-`, `*`, and as arguments to the supported unary functions.
 
 # Example
 ```julia
-ws  = PSWorkspace(desc, 16)
-nx1 = CTPS(0.0, 1)
-cos_μ = cos(2π*0.205);  sin_μ = sin(2π*0.205)
-
-@tpsa ws  nx1 = cos_μ*x1 + sin_μ*(x2 + x1^2 - x3^2)
-# Equivalent zero-allocation expansion:
-#   t1 = borrow!(ws);  _tpsa_mul!(t1, cos_μ, x1)
-#   t2 = borrow!(ws);  t3 = borrow!(ws);  _tpsa_pow!(t3, x1, 2)
-#   t4 = borrow!(ws);  _tpsa_pow!(t4, x3, 2)
-#   t5 = borrow!(ws);  _tpsa_add!(t5, x2, t3);  release!(ws,t3)
-#   _tpsa_sub!(t2, t5, t4);  release!(ws,t4);  release!(ws,t5)
-#   _tpsa_mul!(t2, sin_μ, t2)  [wait — this is the sub-expression view]
-#   _tpsa_add!(nx1, t1, t2);  release!(ws,t1);  release!(ws,t2)
+desc = set_descriptor!(3, 4)
+ws = PSWorkspace(desc, 16)
+x1 = CTPS(0.0, 1); x2 = CTPS(0.0, 2); x3 = CTPS(0.0, 3)
+nx1 = CTPS(Float64, desc)
+μ = 2π * 0.205
+@tpsa ws nx1 = cos(μ)*x1 + sin(μ)*(x2 + x1^2 - x3^2)
 ```
 """
 macro tpsa(ws_expr, assign_expr)
@@ -264,18 +282,37 @@ macro tpsa(ws_expr, assign_expr)
     lhs = assign_expr.args[1]
     rhs = assign_expr.args[2]
 
-    ws_sym  = esc(ws_expr)
+    ws_sym  = gensym("tpsa_ws")
     lhs_sym = esc(lhs)
 
     stmts = Expr[]
-    (result, is_borrow) = _tpsa_lower_expr(rhs, ws_sym, stmts, lhs_sym)
+    temporaries = Dict{Symbol, Symbol}()
+    (result, is_borrow) = _tpsa_lower_expr(rhs, ws_sym, stmts, lhs_sym, temporaries)
 
     # If _tpsa_lower_expr didn't write directly into lhs (shouldn't happen when
     # lhs_sym is passed, but guard just in case):
     if result !== lhs_sym
         push!(stmts, :(copy!($lhs_sym, $result)))
-        is_borrow && push!(stmts, :(release!($ws_sym, $result)))
+        if is_borrow
+            push!(stmts, :(release!($ws_sym, $result)))
+            push!(stmts, :($(temporaries[result]) = false))
+        end
     end
 
-    return Expr(:block, stmts...)
+    # Track ownership with local booleans, not a runtime collection. Early
+    # releases retain the normal peak slot count; finally releases only slots
+    # still owned by this invocation, including after a failed borrow or call.
+    initializers = [:(local $live = false) for live in values(temporaries)]
+    declarations = [:(local $temp) for temp in keys(temporaries)]
+    cleanup = [:($live && release!($ws_sym, $temp)) for (temp, live) in temporaries]
+    return quote
+        local $ws_sym = $(esc(ws_expr))
+        $(declarations...)
+        $(initializers...)
+        try
+            $(stmts...)
+        finally
+            $(cleanup...)
+        end
+    end
 end

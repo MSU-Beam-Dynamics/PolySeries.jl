@@ -226,7 +226,7 @@ nx1 = CTPS(0.0, 1)   # pre-allocated output
 - The second argument must be an assignment `lhs = rhs`.
 - `lhs` must be a pre-allocated `CTPS` object.
 - Supported ops: `+`, `-`, `*`, unary `-`, `^n` (Int), `sin`, `cos`, `exp`, `log`, `sqrt`, `sinh`, `cosh`.
-- Scalars (`Real`) may appear as either operand to `+`, `-`, `*`.
+- Scalars (`Real`) may appear as either operand to `+`, `-`, `*`, and as arguments to the supported unary functions.
 
 ---
 
