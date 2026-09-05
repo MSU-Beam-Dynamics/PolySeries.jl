@@ -103,10 +103,15 @@ end
 mutable struct DescriptorRegistry
     @atomic entries::Vector{PSDesc}
 end
-const DESCRIPTOR_REGISTRY = DescriptorRegistry(PSDesc[])
+# Intentionally a typed, non-const binding: Enzyme may capture the contents of
+# a const global registry when compiling a derivative, including its current
+# entries snapshot. A runtime global load keeps later descriptor IDs visible.
+# The registry object itself is never reassigned; entries are published atomically.
+DESCRIPTOR_REGISTRY::DescriptorRegistry = DescriptorRegistry(PSDesc[])
 
 @inline function _descriptor_by_id(id::Int)
-    entries = @atomic :acquire DESCRIPTOR_REGISTRY.entries
+    registry = DESCRIPTOR_REGISTRY
+    entries = @atomic :acquire registry.entries
     return entries[id]
 end
 
@@ -639,9 +644,13 @@ end
 # term was exactly zero (e.g. `asin(px / d2)` about the reference orbit).
 # During AD, constructors/arithmetic retain initialized numerical zeros in the
 # mask; a clear bit still denotes a structural zero with no coefficient to read.
-@inline function cst(ctps::CTPS{T}) where T
-    return (ctps.degree_mask[] & UInt64(1)) != 0 ? ctps.c[1] : zero(T)
+# A shared read boundary lets differentiation rules use coefficient activity
+# independently of the primal's lazy-storage mask.
+@inline function _coefficient(coeffs::Vector{T}, mask::UInt64, index::Int, degree::Int) where T
+    return (mask & (UInt64(1) << degree)) != 0 ? coeffs[index] : zero(T)
 end
+
+@inline cst(ctps::CTPS) = _coefficient(ctps.c, ctps.degree_mask[], 1, 0)
 
 function findindex(ctps::CTPS{T}, indexmap::Vector{Int}) where T
     # find the index of the indexmap in the coefficient vector
@@ -776,8 +785,7 @@ end
 @inline function element(ctps::CTPS{T}, ind::Vector{Int}) where T
     result = findindex(ctps, ind)
     degree = Int(ctps.desc.polymap.map[result, 1])
-    active = (ctps.degree_mask[] & (UInt64(1) << degree)) != 0
-    return active ? ctps.c[result] : zero(T)
+    return _coefficient(ctps.c, ctps.degree_mask[], result, degree)
 end
 
 # Defining callable instance — evaluate the CTPS polynomial at numerical args.

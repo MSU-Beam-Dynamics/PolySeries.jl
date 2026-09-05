@@ -4,6 +4,8 @@
 using Enzyme
 
 include("enzyme_zero_tests.jl")
+include("enzyme_prebuilt_tests.jl")
+include("enzyme_descriptor_switch_tests.jl")
 
 @testset "Enzyme with an explicitly owned descriptor" begin
     desc = PSDesc(1, 4)

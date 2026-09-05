@@ -376,6 +376,26 @@ Enzyme can differentiate *through* TPSA computations, giving exact
 first-order sensitivities of any Taylor coefficient with respect to scalar
 "design" parameters.
 
+### Coefficient access on an existing polynomial
+
+`cst` and `element` have explicit differentiation rules: a zero-valued primal
+coefficient can still have a nonzero tangent. These reads continue to respect
+the primal storage mask, including when inactive storage is uninitialized.
+
+```julia
+using PolySeries, Enzyme
+set_descriptor!(1, 3)
+p = CTPS(0.0, 1)                 # Constructed before entering Enzyme
+dp = Enzyme.make_zero(p)         # Independent, fully initialized shadow
+dp.c[1] = 1.0                   # Unit constant-coefficient tangent
+Enzyme.autodiff(Forward, cst, Duplicated(p, dp)) # (1.0,)
+```
+
+Enzyme coefficient shadows are dense: initialize every tangent coefficient,
+even when its corresponding primal degree is inactive. `Enzyme.make_zero(p)`
+provides initialized zero storage and an independent full degree mask, so
+returned gradients expose contributions at degrees absent from the primal.
+
 ### Setup
 
 `using PolySeries, Enzyme` is sufficient. The `PolySeriesEnzymeExt` package extension
