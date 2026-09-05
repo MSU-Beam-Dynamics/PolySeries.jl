@@ -12,7 +12,7 @@ PolySeries.jl computes multivariate Taylor expansions of arbitrary functions to 
 - **Lazy-zero allocation** — temporaries use `undef` memory; the `degree_mask` invariant ensures garbage outside the active range is never read.
 - **Zero-allocation in-place API** — `mul!`, `add!`, `scaleadd!`, `pow!`, etc., plus `PSWorkspace` for pool-based temporary management.
 - **`@tpsa` macro** — compiles an arithmetic expression into an optimal in-place call sequence, borrowing workspace slots automatically.
-- **Thread-safe** — per-thread descriptor and workspace pattern documented and tested.
+- **Thread-safe** — task-local defaults and separate workspaces documented and tested.
 
 ## Installation
 
@@ -50,10 +50,15 @@ println(element(f, [1, 2]))   # → -0.5
 ## Quick reference
 
 ```julia
-# Descriptor (global, call once per thread)
+# Default descriptor (local to this task)
 set_descriptor!(nv, order)
 desc = get_descriptor()
 clear_descriptor!()
+
+# Explicit descriptor construction (also works without a task default)
+desc = PSDesc(2, 4)
+x = CTPS(0.0, 1, desc)
+# x keeps desc even if the task default changes later
 
 # Construction
 x  = CTPS(0.0, 1)       # variable 1 expanded around 0.0

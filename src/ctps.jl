@@ -77,36 +77,52 @@ end
 function _init_desc_pools!(pools::Vector{DescPool}, desc)  # desc::PSDesc (forward ref)
     for pool in pools
         for i in 1:CTPS_POOL_SIZE
-            pool.ctps[i] = CTPS{Float64}(pool.bufs[i], pool.refs[i])
+            pool.ctps[i] = CTPS{Float64}(pool.bufs[i], desc, pool.refs[i])
         end
     end
 end
 
-# TPSA Descriptor - immutable, shared metadata
-struct PSDesc
-    nv::Int                       # number of variables
-    order::Int                    # maximum order
-    N::Int                        # total number of coefficients
-    Nd::Vector{Int}               # size per degree
-    off::Vector{Int}              # start offset per degree (1-based)
-    polymap::PolyMap              # index mapping (index → exponent)
-    exp_to_idx::Dict              # reverse map: SVector{nv+1,UInt8} → Int (concrete per instance)
-    mul::Vector{MulSchedule2D}    # 2D k-map multiplication schedules indexed as (di,dj)
-    comp_plan::CompPlan           # composition build plan
-    _pools::Vector{DescPool}      # per-thread coefficient buffer pools (Float64 only)
+# Descriptor fields are const: their bindings cannot be reassigned. The boxed
+# representation gives stable identity and avoids Enzyme issues with returning
+# large immutable metadata structs. Index tables are read-only after construction.
+mutable struct PSDesc
+    const id::Int                       # stable context identity
+    const nv::Int                       # number of variables
+    const order::Int                    # maximum order
+    const N::Int                        # total number of coefficients
+    const Nd::Vector{Int}               # size per degree
+    const off::Vector{Int}              # start offset per degree (1-based)
+    const polymap::PolyMap              # index mapping (index → exponent)
+    const exp_to_idx::Dict              # reverse map: SVector{nv+1,UInt8} → Int (concrete per instance)
+    const mul::Vector{MulSchedule2D}    # 2D k-map multiplication schedules indexed as (di,dj)
+    const comp_plan::CompPlan           # composition build plan
+    const _pools::Vector{DescPool}      # per-thread coefficient buffer pools (Float64 only)
+end
+
+# Publish a new immutable snapshot only when a descriptor is created. Readers
+# need no cache lock and never race with a resize of the vector they are using.
+mutable struct DescriptorRegistry
+    @atomic entries::Vector{PSDesc}
+end
+const DESCRIPTOR_REGISTRY = DescriptorRegistry(PSDesc[])
+
+@inline function _descriptor_by_id(id::Int)
+    entries = @atomic :acquire DESCRIPTOR_REGISTRY.entries
+    return entries[id]
 end
 
 # Thread-safe cache for PSDesc instances
 const DESC_CACHE = Dict{Tuple{Int,Int}, PSDesc}()
 
-# Global default descriptor
-const GLOBAL_DESC = Ref{Union{PSDesc, Nothing}}(nothing)
+# Defaults are local to a task and are consulted only by convenience constructors.
+const DESCRIPTOR_TLS_KEY = gensym(:PolySeries_descriptor)
 
 """
     set_descriptor!(nv::Int, order::Int)
 
-Set the global default descriptor for all CTPS operations.
-This should be called once at the beginning of your program.
+Set this task's default descriptor for new CTPS objects. Existing polynomials
+retain their descriptors. Initialize the default in each task that needs it,
+or pass a descriptor explicitly to CTPS constructors.
 
 # Arguments
 - `nv::Int`: Number of variables
@@ -121,29 +137,30 @@ y = CTPS(0.0, 2)       # Create variable y
 ```
 """
 function set_descriptor!(nv::Int, order::Int)
-    GLOBAL_DESC[] = PSDesc(nv, order)
-    return GLOBAL_DESC[]
+    desc = PSDesc(nv, order)
+    task_local_storage(DESCRIPTOR_TLS_KEY, desc)
+    return desc
 end
 
 """
     get_descriptor()
 
-Get the current global descriptor. Throws an error if not set.
+Get this task's default descriptor. Throws an error if not set.
 """
 function get_descriptor()
-    if GLOBAL_DESC[] === nothing
-        error("No global descriptor set. Call set_descriptor!(nv, order) first.")
-    end
-    return GLOBAL_DESC[]
+    desc = get(task_local_storage(), DESCRIPTOR_TLS_KEY, nothing)
+    desc === nothing && error("No descriptor set for this task. Call set_descriptor!(nv, order) first or pass a PSDesc to CTPS.")
+    return desc::PSDesc
 end
 
 """
     clear_descriptor!()
 
-Clear the global descriptor.
+Clear this task's default descriptor. Existing polynomials remain usable.
 """
 function clear_descriptor!()
-    GLOBAL_DESC[] = nothing
+    delete!(task_local_storage(), DESCRIPTOR_TLS_KEY)
+    return nothing
 end
 const DESC_CACHE_LOCK = ReentrantLock()
 
@@ -209,8 +226,10 @@ function PSDesc(nv::Int, order::Int)
         # Pre-allocate per-thread coefficient buffer pools (Float64 only)
         pools = [DescPool(N) for _ in 1:Threads.nthreads()]
 
-        desc = PSDesc(nv, order, N, Nd, off, polymap, exp_to_idx, mul, comp_plan, pools)
+        entries = @atomic :acquire DESCRIPTOR_REGISTRY.entries
+        desc = PSDesc(length(entries) + 1, nv, order, N, Nd, off, polymap, exp_to_idx, mul, comp_plan, pools)
         _init_desc_pools!(pools, desc)   # phase-2: populate CTPS wrappers now that desc exists
+        @atomic :release DESCRIPTOR_REGISTRY.entries = [entries; desc]
         DESC_CACHE[key] = desc
         return desc
     end
@@ -298,24 +317,42 @@ function build_comp_plan(polymap::PolyMap, exp_to_idx::Dict, nv::Int, N::Int)
     return CompPlan(par_idx, par_var, n_children)
 end
 
-# CTPS — two fields only; the descriptor is NOT stored per-instance.
-# Removing the `desc::PSDesc` field:
-#   • Eliminates Enzyme's "constant stored into differentiable struct" error
-#     (PSDesc is a large const struct that Enzyme cannot differentiate through)
-#   • Reduces CTPS memory footprint (no redundant pointer per instance)
-#   • Matches the single-active-descriptor design: all live CTPS objects share
-#     the same global descriptor set by set_descriptor!(nv, order).
+# A permanent context ID fixes each polynomial's descriptor independently of
+# defaults. Numeric metadata avoids Enzyme's mixed-activity errors when constant
+# descriptor references are stored in differentiable CTPS objects.
 struct CTPS{T}
-    c           :: Vector{T}                # coefficients, length get_descriptor().N
+    c           :: Vector{T}                # coefficients, length desc.N
+    descriptor_id :: Int
     degree_mask :: Base.RefValue{UInt64}    # bit i set iff degree-i block is active
+
+    function CTPS{T}(c::Vector{T}, desc::PSDesc, mask::Base.RefValue{UInt64}) where T
+        length(c) == desc.N || throw(DimensionMismatch("Coefficient buffer length must match descriptor size $(desc.N)"))
+        new{T}(c, desc.id, mask)
+    end
 end
 
-# Virtual `.desc` property — returns the active global descriptor.
-# All code using `ctps.desc` works unchanged with zero per-instance storage cost.
 @inline Base.getproperty(ctps::CTPS, s::Symbol) =
-    s === :desc ? get_descriptor() : getfield(ctps, s)
+    s === :desc ? _descriptor_by_id(getfield(ctps, :descriptor_id)) : getfield(ctps, s)
+Base.propertynames(::CTPS, private::Bool=false) =
+    private ? (:c, :desc, :degree_mask, :descriptor_id) : (:c, :desc, :degree_mask)
 
-# Compute degree mask from coefficients
+# Preserve the old raw-buffer constructor, capturing the default once.
+CTPS{T}(c::Vector{T}, mask::Base.RefValue{UInt64}) where T =
+    CTPS{T}(c, get_descriptor(), mask)
+
+@inline function _check_descriptors(a::CTPS, b::CTPS)
+    a.descriptor_id == b.descriptor_id ||
+        throw(DimensionMismatch("CTPS operands must have the same number of variables and order"))
+    return nothing
+end
+
+# A numerical zero can have a nonzero derivative. During Enzyme AD, retain
+# initialized zero coefficients and execute their arithmetic; only structural
+# zeros (inactive degree blocks) may be skipped. Outside AD this helper reduces
+# to iszero, preserving the sparse fast paths and lazy-storage invariant.
+@inline _prunable_zero(x) = !within_autodiff() && iszero(x)
+
+# Compute degree mask from fully initialized coefficients.
 function compute_degree_mask(c::Vector{T}, desc::PSDesc) where T
     mask = UInt64(0)
     order = desc.order
@@ -323,7 +360,7 @@ function compute_degree_mask(c::Vector{T}, desc::PSDesc) where T
         d_start = desc.off[d + 1]
         d_end = d_start + desc.Nd[d + 1] - 1
         for i in d_start:d_end
-            if !iszero(c[i])
+            if !_prunable_zero(c[i])
                 mask |= (UInt64(1) << d)
                 break
             end
@@ -358,12 +395,12 @@ end
 @inline function _ctps_constant(a::T, desc::PSDesc) where T
     c = Vector{T}(undef, desc.N)   # lazy: only c[1] is written
     c[1] = a
-    mask = iszero(a) ? UInt64(0) : UInt64(1)
-    return CTPS{T}(c, Ref(mask))
+    mask = _prunable_zero(a) ? UInt64(0) : UInt64(1)
+    return CTPS{T}(c, desc, Ref(mask))
 end
 
 @inline function _ctps_zero(::Type{T}, desc::PSDesc) where T
-    return CTPS{T}(Vector{T}(undef, desc.N), Ref(UInt64(0)))
+    return CTPS{T}(Vector{T}(undef, desc.N), desc, Ref(UInt64(0)))
 end
 
 # ── Thread-local pool: acquire / release ─────────────────────────────────────
@@ -412,10 +449,11 @@ end
             tm = src.degree_mask[]
             pool.refs[idx][] = tm
             if tm != 0
-                (s, e) = active_range_bounds(desc, tm)
                 dst_buf = pool.bufs[idx]
                 src_buf = src.c
-                @inbounds @simd for i in s:e; dst_buf[i] = src_buf[i]; end
+                for (s, e) in active_ranges(desc, tm)
+                    @inbounds @simd for i in s:e; dst_buf[i] = src_buf[i]; end
+                end
             end
             return (idx, pool.ctps[idx]::CTPS{Float64})   # pre-allocated CTPS, zero new allocations
         end
@@ -452,7 +490,7 @@ end
 function CTPS(T::Type, nv::Int, order::Int)
     desc = set_descriptor!(nv, order)
     c = zeros(T, desc.N)
-    return CTPS{T}(c, Ref(UInt64(0)))
+    return CTPS{T}(c, desc, Ref(UInt64(0)))
 end
 
 # Constructor: constant CTPS
@@ -460,8 +498,8 @@ function CTPS(a::T, nv::Int, order::Int) where T
     desc = set_descriptor!(nv, order)
     c = zeros(T, desc.N)
     c[1] = a
-    mask = iszero(a) ? UInt64(0) : UInt64(1)  # Degree 0 has non-zero
-    return CTPS{T}(c, Ref(mask))
+    mask = _prunable_zero(a) ? UInt64(0) : UInt64(1)  # Degree 0 has non-zero
+    return CTPS{T}(c, desc, Ref(mask))
 end
 
 # Constructor: variable CTPS (a + δxₙ)
@@ -473,10 +511,10 @@ function CTPS(a::T, n::Int, nv::Int, order::Int) where T
         c[1] = a           # constant term
         # Degree 0 and degree 1 have non-zeros
         mask = UInt64(0x3)  # bits 0 and 1 set
-        if iszero(a)
+        if _prunable_zero(a)
             mask = UInt64(0x2)  # only bit 1 set
         end
-        return CTPS{T}(c, Ref(mask))
+        return CTPS{T}(c, desc, Ref(mask))
     else
         error("Variable index out of range in CTPS")
     end
@@ -488,6 +526,8 @@ end
 # `active_range_bounds(desc, mask)` returns the (start, stop) 1-based indices
 # of the coefficient slice that covers all non-zero degrees in `mask`.
 # Operating only on this range avoids touching zero pages for sparse CTPS.
+# This bounding interval is safe for clearing discarded storage. Coefficient
+# reads and arithmetic must use active_ranges to respect inactive gaps.
 # -----------------------------------------------------------------------
 @inline function active_range_bounds(desc::PSDesc, mask::UInt64)
     mask == 0 && return (1, 0)   # empty range
@@ -498,62 +538,97 @@ end
     return (start, stop)
 end
 
-# Copy constructor — range-limited: only copies active coefficient range.
-# Uses undef allocation; positions outside [s,e] are garbage but degree_mask
-# guarantees they are never read.
+# Iterate maximal runs of active degrees without allocating. Dense masks take
+# one coefficient loop, just like active_range_bounds; gaps take separate loops
+# so inactive (possibly uninitialized) coefficients are never read or overwritten.
+struct ActiveRanges
+    desc::PSDesc
+    mask::UInt64
+end
+
+@inline active_ranges(desc::PSDesc, mask::UInt64) = ActiveRanges(desc, mask)
+Base.IteratorSize(::Type{ActiveRanges}) = Base.SizeUnknown()
+Base.eltype(::Type{ActiveRanges}) = Tuple{Int,Int}
+
+@inline function Base.iterate(ranges::ActiveRanges, mask::UInt64=ranges.mask)
+    iszero(mask) && return nothing
+    first_degree = trailing_zeros(mask)
+    # Adding the lowest set bit carries through the first run of ones. UInt64
+    # wraparound gives zero for a run ending at bit 63; trailing_zeros(0) is 64.
+    after_run = mask + (UInt64(1) << first_degree)
+    past_degree = trailing_zeros(after_run)
+    desc = ranges.desc
+    start = desc.off[first_degree + 1]
+    stop = desc.off[past_degree] + desc.Nd[past_degree] - 1
+    remaining = mask & after_run
+    return ((start, stop), remaining)
+end
+
+# Copy constructor — only copies active coefficient runs.
+# Inactive blocks remain uninitialized and must never be read.
 function CTPS(M::CTPS{T}) where T
     desc = M.desc
     c    = Vector{T}(undef, desc.N)   # lazy: only active range is written
     mask = M.degree_mask[]
     if mask != 0
-        (s, e) = active_range_bounds(desc, mask)
-        @inbounds @simd for i in s:e
-            c[i] = M.c[i]
+        for (s, e) in active_ranges(desc, mask)
+            @inbounds @simd for i in s:e
+                c[i] = M.c[i]
+            end
         end
     end
-    return CTPS{T}(c, Ref(mask))
+    return CTPS{T}(c, desc, Ref(mask))
 end
 
-# ========== Simplified constructors using global descriptor ==========
+# Convenience constructors capture this task's default at construction time.
+CTPS(T::Type) = CTPS(T, get_descriptor())
+CTPS(a::Number) = CTPS(a, get_descriptor())
+CTPS(a::Number, n::Int) = CTPS(a, n, get_descriptor())
 
-# Constructor: zero CTPS using global descriptor
-function CTPS(T::Type)
-    desc = get_descriptor()
-    c = zeros(T, desc.N)
-    return CTPS{T}(c, Ref(UInt64(0)))
+"""    CTPS(T::Type, desc::PSDesc)
+
+Create a zero polynomial with an explicit descriptor, without changing defaults.
+"""
+function CTPS(::Type{T}, desc::PSDesc) where T
+    return CTPS{T}(zeros(T, desc.N), desc, Ref(UInt64(0)))
 end
 
-# Constructor: constant CTPS using global descriptor
-function CTPS(a::T) where T<:Number
-    desc = get_descriptor()
+"""    CTPS(a::Number, desc::PSDesc)
+
+Create a constant polynomial with an explicit descriptor.
+"""
+function CTPS(a::T, desc::PSDesc) where T<:Number
     c = zeros(T, desc.N)
     c[1] = a
-    mask = iszero(a) ? UInt64(0) : UInt64(1)
-    return CTPS{T}(c, Ref(mask))
+    mask = _prunable_zero(a) ? UInt64(0) : UInt64(1)
+    return CTPS{T}(c, desc, Ref(mask))
 end
 
-# Constructor: variable CTPS using global descriptor
-function CTPS(a::T, n::Int) where T<:Number
-    desc = get_descriptor()
-    nv = desc.nv
-    if n <= nv && n > 0
-        c = zeros(T, desc.N)
-        c[n + 1] = one(T)  # linear term for variable n
-        c[1] = a           # constant term
-        mask = UInt64(0x3)  # bits 0 and 1 set
-        if iszero(a)
-            mask = UInt64(0x2)  # only bit 1 set
-        end
-        return CTPS{T}(c, Ref(mask))
-    else
-        error("Variable index $n out of range (must be 1 to $nv)")
-    end
+"""    CTPS(a::Number, n::Int, desc::PSDesc)
+
+Create the variable `a + δxₙ` with an explicit descriptor.
+"""
+function CTPS(a::T, n::Int, desc::PSDesc) where T<:Number
+    1 <= n <= desc.nv || throw(ArgumentError("Variable index must be between 1 and $(desc.nv)"))
+    desc.order >= 1 || throw(ArgumentError("A variable requires order >= 1"))
+    c = zeros(T, desc.N)
+    c[1] = a
+    c[n + 1] = one(T)
+    mask = _prunable_zero(a) ? UInt64(2) : UInt64(3)
+    return CTPS{T}(c, desc, Ref(mask))
 end
 
 # ========== End simplified constructors ==========
 
-function cst(ctps::CTPS{T}) where T
-    return ctps.c[1]
+# Coefficient storage is lazy: a degree block whose bit is clear in
+# `degree_mask` is mathematically zero but its memory is uninitialized, so every
+# read must go through the mask. `cst` feeds the expansion point of sqrt, inv,
+# sin, asin, ... — reading `c[1]` directly returned garbage whenever the constant
+# term was exactly zero (e.g. `asin(px / d2)` about the reference orbit).
+# During AD, constructors/arithmetic retain initialized numerical zeros in the
+# mask; a clear bit still denotes a structural zero with no coefficient to read.
+@inline function cst(ctps::CTPS{T}) where T
+    return (ctps.degree_mask[] & UInt64(1)) != 0 ? ctps.c[1] : zero(T)
 end
 
 function findindex(ctps::CTPS{T}, indexmap::Vector{Int}) where T
@@ -688,7 +763,9 @@ end
 
 @inline function element(ctps::CTPS{T}, ind::Vector{Int}) where T
     result = findindex(ctps, ind)
-    return ctps.c[result]
+    degree = Int(ctps.desc.polymap.map[result, 1])
+    active = (ctps.degree_mask[] & (UInt64(1) << degree)) != 0
+    return active ? ctps.c[result] : zero(T)
 end
 
 # Defining callable instance — evaluate the CTPS polynomial at numerical args.
@@ -707,18 +784,19 @@ function (ctps::CTPS{T})(args::T...) where T
     mask == 0 && return zero(T)   # identically-zero polynomial fast path
 
     pm         = desc.polymap.map
-    (lo, hi)   = active_range_bounds(desc, mask)  # skip zero degree blocks
     return_value = (mask & UInt64(1)) != 0 ? ctps.c[1] : zero(T)
 
-    @inbounds for i in max(lo, 2):hi
-        val = ctps.c[i]
-        iszero(val) && continue       # skip zero coefficients early
-        for v in 1:nv
-            e = Int(pm[i, v + 1])     # Enzyme prefers Int
-            e == 0 && continue
-            val *= args[v]^e
+    for (lo, hi) in active_ranges(desc, mask & ~UInt64(1))
+        @inbounds for i in lo:hi
+            val = ctps.c[i]
+            _prunable_zero(val) && continue       # skip zero coefficients early
+            for v in 1:nv
+                e = Int(pm[i, v + 1])     # Enzyme prefers Int
+                e == 0 && continue
+                val *= args[v]^e
+            end
+            return_value += val
         end
-        return_value += val
     end
     return return_value
 end
@@ -881,6 +959,8 @@ end
 
 
 function add!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
+    _check_descriptors(result, ctps1)
+    _check_descriptors(ctps1, ctps2)
     m1 = ctps1.degree_mask[]; m2 = ctps2.degree_mask[]
     m_out = m1 | m2
     if m_out != 0
@@ -888,16 +968,19 @@ function add!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
         only2 = m2 & ~m1    # degrees active in ctps2 only  → copy from ctps2
         both  = m1  &  m2   # degrees active in both        → add
         if only1 != 0
-            (s, e) = active_range_bounds(ctps1.desc, only1)
-            @inbounds @simd for i in s:e; result.c[i] = ctps1.c[i]; end
+            for (s, e) in active_ranges(ctps1.desc, only1)
+                @inbounds @simd for i in s:e; result.c[i] = ctps1.c[i]; end
+            end
         end
         if only2 != 0
-            (s, e) = active_range_bounds(ctps1.desc, only2)
-            @inbounds @simd for i in s:e; result.c[i] = ctps2.c[i]; end
+            for (s, e) in active_ranges(ctps1.desc, only2)
+                @inbounds @simd for i in s:e; result.c[i] = ctps2.c[i]; end
+            end
         end
         if both != 0
-            (s, e) = active_range_bounds(ctps1.desc, both)
-            @inbounds @simd for i in s:e; result.c[i] = ctps1.c[i] + ctps2.c[i]; end
+            for (s, e) in active_ranges(ctps1.desc, both)
+                @inbounds @simd for i in s:e; result.c[i] = ctps1.c[i] + ctps2.c[i]; end
+            end
         end
     end
     result.degree_mask[] = m_out
@@ -905,39 +988,46 @@ function add!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
 end
 
 function add!(result::CTPS{T}, ctps1::CTPS{T}, a::T) where T
+    _check_descriptors(result, ctps1)
     m1 = ctps1.degree_mask[]
     if m1 != 0
-        (s, e) = active_range_bounds(ctps1.desc, m1)
-        @inbounds @simd for i in s:e
-            result.c[i] = ctps1.c[i]
+        for (s, e) in active_ranges(ctps1.desc, m1)
+            @inbounds @simd for i in s:e
+                result.c[i] = ctps1.c[i]
+            end
         end
     end
     # c[1] is valid only if bit-0 is in m1 (lazy-zero: otherwise garbage)
     c0 = (m1 & UInt64(1) != 0) ? ctps1.c[1] : zero(T)
     result.c[1] = c0 + a
-    result.degree_mask[] = (m1 & ~UInt64(1)) | (iszero(result.c[1]) ? UInt64(0) : UInt64(1))
+    result.degree_mask[] = (m1 & ~UInt64(1)) | (_prunable_zero(result.c[1]) ? UInt64(0) : UInt64(1))
     return nothing
 end
 
 function addto!(ctps1::CTPS{T}, ctps2::CTPS{T}) where T
+    _check_descriptors(ctps1, ctps2)
     m2 = ctps2.degree_mask[]
     m2 == 0 && return nothing
     m1 = ctps1.degree_mask[]
     new_bits   = m2 & ~m1  # degrees only in ctps2 → first write (=)
     accum_bits = m2 &  m1  # degrees in both        → accumulate (+=)
     if new_bits != 0
-        (s, e) = active_range_bounds(ctps1.desc, new_bits)
-        @inbounds @simd for i in s:e; ctps1.c[i] = ctps2.c[i]; end
+        for (s, e) in active_ranges(ctps1.desc, new_bits)
+            @inbounds @simd for i in s:e; ctps1.c[i] = ctps2.c[i]; end
+        end
     end
     if accum_bits != 0
-        (s, e) = active_range_bounds(ctps1.desc, accum_bits)
-        @inbounds @simd for i in s:e; ctps1.c[i] += ctps2.c[i]; end
+        for (s, e) in active_ranges(ctps1.desc, accum_bits)
+            @inbounds @simd for i in s:e; ctps1.c[i] += ctps2.c[i]; end
+        end
     end
     ctps1.degree_mask[] |= m2
     return nothing
 end
 
 function sub!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
+    _check_descriptors(result, ctps1)
+    _check_descriptors(ctps1, ctps2)
     m1 = ctps1.degree_mask[]; m2 = ctps2.degree_mask[]
     m_out = m1 | m2
     if m_out != 0
@@ -945,16 +1035,19 @@ function sub!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
         only2 = m2 & ~m1    # active only in ctps2 → negate from ctps2
         both  = m1  &  m2   # active in both       → subtract
         if only1 != 0
-            (s, e) = active_range_bounds(ctps1.desc, only1)
-            @inbounds @simd for i in s:e; result.c[i] = ctps1.c[i]; end
+            for (s, e) in active_ranges(ctps1.desc, only1)
+                @inbounds @simd for i in s:e; result.c[i] = ctps1.c[i]; end
+            end
         end
         if only2 != 0
-            (s, e) = active_range_bounds(ctps1.desc, only2)
-            @inbounds @simd for i in s:e; result.c[i] = -ctps2.c[i]; end
+            for (s, e) in active_ranges(ctps1.desc, only2)
+                @inbounds @simd for i in s:e; result.c[i] = -ctps2.c[i]; end
+            end
         end
         if both != 0
-            (s, e) = active_range_bounds(ctps1.desc, both)
-            @inbounds @simd for i in s:e; result.c[i] = ctps1.c[i] - ctps2.c[i]; end
+            for (s, e) in active_ranges(ctps1.desc, both)
+                @inbounds @simd for i in s:e; result.c[i] = ctps1.c[i] - ctps2.c[i]; end
+            end
         end
     end
     result.degree_mask[] = m_out
@@ -962,18 +1055,21 @@ function sub!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
 end
 
 function subfrom!(ctps1::CTPS{T}, ctps2::CTPS{T}) where T
+    _check_descriptors(ctps1, ctps2)
     m2 = ctps2.degree_mask[]
     m2 == 0 && return nothing
     m1 = ctps1.degree_mask[]
     new_bits   = m2 & ~m1  # degrees only in ctps2 → first write (= -ctps2)
     accum_bits = m2 &  m1  # degrees in both        → subtract (-=)
     if new_bits != 0
-        (s, e) = active_range_bounds(ctps1.desc, new_bits)
-        @inbounds @simd for i in s:e; ctps1.c[i] = -ctps2.c[i]; end
+        for (s, e) in active_ranges(ctps1.desc, new_bits)
+            @inbounds @simd for i in s:e; ctps1.c[i] = -ctps2.c[i]; end
+        end
     end
     if accum_bits != 0
-        (s, e) = active_range_bounds(ctps1.desc, accum_bits)
-        @inbounds @simd for i in s:e; ctps1.c[i] -= ctps2.c[i]; end
+        for (s, e) in active_ranges(ctps1.desc, accum_bits)
+            @inbounds @simd for i in s:e; ctps1.c[i] -= ctps2.c[i]; end
+        end
     end
     ctps1.degree_mask[] |= m2
     return nothing
@@ -982,9 +1078,10 @@ end
 function scale!(ctps::CTPS{T}, a::T) where T
     mask = ctps.degree_mask[]
     if mask != 0
-        (s, e) = active_range_bounds(ctps.desc, mask)
-        @inbounds @simd for i in s:e
-            ctps.c[i] *= a
+        for (s, e) in active_ranges(ctps.desc, mask)
+            @inbounds @simd for i in s:e
+                ctps.c[i] *= a
+            end
         end
     end
     return nothing
@@ -992,21 +1089,24 @@ end
 
 # 3-arg scale: dest = src * a  (range-limited copy + multiply)
 function scale!(dest::CTPS{T}, src::CTPS{T}, a::T) where T
+    _check_descriptors(dest, src)
     sm = src.degree_mask[]
     dm = dest.degree_mask[]
     # Zero out degrees in dest that src doesn't cover
     extra = dm & ~sm
     if extra != 0
-        (s, e) = active_range_bounds(dest.desc, extra)
-        @inbounds @simd for i in s:e; dest.c[i] = zero(T); end
-    end
-    if sm != 0
-        (s, e) = active_range_bounds(src.desc, sm)
-        @inbounds @simd for i in s:e
-            dest.c[i] = src.c[i] * a
+        for (s, e) in active_ranges(dest.desc, extra)
+            @inbounds @simd for i in s:e; dest.c[i] = zero(T); end
         end
     end
-    dest.degree_mask[] = iszero(a) ? UInt64(0) : sm
+    if sm != 0
+        for (s, e) in active_ranges(src.desc, sm)
+            @inbounds @simd for i in s:e
+                dest.c[i] = src.c[i] * a
+            end
+        end
+    end
+    dest.degree_mask[] = _prunable_zero(a) ? UInt64(0) : sm
     return nothing
 end
 
@@ -1014,33 +1114,39 @@ end
 # The canonical in-place form of the linear combination `a*c1 + b*c2 → result`.
 # Used in the rotation step: nx1 = cos_μ*x1 + sin_μ*pmx.
 function scaleadd!(result::CTPS{T}, a::T, c1::CTPS{T}, b::T, c2::CTPS{T}) where T
+    _check_descriptors(result, c1)
+    _check_descriptors(c1, c2)
     m1   = c1.degree_mask[]
     m2   = c2.degree_mask[]
-    ma   = iszero(a) ? UInt64(0) : m1   # effective mask for a*c1
-    mb   = iszero(b) ? UInt64(0) : m2   # effective mask for b*c2
+    ma   = _prunable_zero(a) ? UInt64(0) : m1   # effective mask for a*c1
+    mb   = _prunable_zero(b) ? UInt64(0) : m2   # effective mask for b*c2
     mout = ma | mb
     dm   = result.degree_mask[]
     # Zero degrees present in dest but not in the output
     extra = dm & ~mout
     if extra != 0
-        (s, e) = active_range_bounds(result.desc, extra)
-        @inbounds @simd for i in s:e; result.c[i] = zero(T); end
+        for (s, e) in active_ranges(result.desc, extra)
+            @inbounds @simd for i in s:e; result.c[i] = zero(T); end
+        end
     end
     # Split mout into sub-ranges to avoid reading garbage from inactive source
     onlya   = ma & ~mb
     onlyb   = mb & ~ma
     both_ab = ma  &  mb
     if onlya != 0
-        (s, e) = active_range_bounds(result.desc, onlya)
-        @inbounds @simd for i in s:e; result.c[i] = a * c1.c[i]; end
+        for (s, e) in active_ranges(result.desc, onlya)
+            @inbounds @simd for i in s:e; result.c[i] = a * c1.c[i]; end
+        end
     end
     if onlyb != 0
-        (s, e) = active_range_bounds(result.desc, onlyb)
-        @inbounds @simd for i in s:e; result.c[i] = b * c2.c[i]; end
+        for (s, e) in active_ranges(result.desc, onlyb)
+            @inbounds @simd for i in s:e; result.c[i] = b * c2.c[i]; end
+        end
     end
     if both_ab != 0
-        (s, e) = active_range_bounds(result.desc, both_ab)
-        @inbounds @simd for i in s:e; result.c[i] = a * c1.c[i] + b * c2.c[i]; end
+        for (s, e) in active_ranges(result.desc, both_ab)
+            @inbounds @simd for i in s:e; result.c[i] = a * c1.c[i] + b * c2.c[i]; end
+        end
     end
     result.degree_mask[] = mout
     return nothing
@@ -1062,7 +1168,7 @@ end
 #     types fall back to heap via _ctps_zero.
 #   • `borrow!` returns a CTPS{Float64} backed by a pre-allocated buffer.
 #   • `release!` zeros only the active degree range — O(active_range), not O(N).
-#   • The workspace is NOT thread-safe: create one per thread or protect access.
+#   • The workspace is NOT thread-safe: create one per concurrent task or protect access.
 mutable struct PSWorkspace
     desc     :: PSDesc
     bufs     :: Vector{CTPS{Float64}}   # pre-allocated CTPS objects
@@ -1072,7 +1178,7 @@ mutable struct PSWorkspace
 end
 
 function PSWorkspace(desc::PSDesc, n::Int = 32)
-    bufs  = [CTPS{Float64}(zeros(Float64, desc.N), Ref(UInt64(0)))
+    bufs  = [CTPS{Float64}(zeros(Float64, desc.N), desc, Ref(UInt64(0)))
              for _ in 1:n]
     avail = collect(1:n)
     id_to_idx = Dict{UInt64, Int}(objectid(bufs[i].c) => i for i in 1:n)
@@ -1095,6 +1201,9 @@ end
 Return a borrowed CTPS slot to the workspace.
 Zeros only the active degree range before returning — O(active_range)."""
 @inline function release!(ws::PSWorkspace, ctps::CTPS{Float64})
+    ctps.desc === ws.desc || throw(DimensionMismatch("CTPS and workspace descriptors must match"))
+    idx = get(ws.id_to_idx, objectid(ctps.c), 0)
+    idx != 0 || throw(ArgumentError("CTPS was not borrowed from this workspace"))
     dm = ctps.degree_mask[]
     if dm != 0
         (s, e) = active_range_bounds(ws.desc, dm)
@@ -1102,27 +1211,29 @@ Zeros only the active degree range before returning — O(active_range)."""
         @inbounds @simd for i in s:e; buf[i] = 0.0; end
         ctps.degree_mask[] = UInt64(0)
     end
-    idx = ws.id_to_idx[objectid(ctps.c)]
     ws.sp += 1
     ws.avail[ws.sp] = idx
     return nothing
 end
 
 function copy!(dest::CTPS{T}, src::CTPS{T}) where T
+    _check_descriptors(dest, src)
     # Zero out any degrees in dest that src doesn't have, then copy active range
     src_mask  = src.degree_mask[]
     dest_mask = dest.degree_mask[]
     extra_mask = dest_mask & ~src_mask
     if extra_mask != 0
-        (s, e) = active_range_bounds(dest.desc, extra_mask)
-        @inbounds @simd for i in s:e
-            dest.c[i] = zero(T)
+        for (s, e) in active_ranges(dest.desc, extra_mask)
+            @inbounds @simd for i in s:e
+                dest.c[i] = zero(T)
+            end
         end
     end
     if src_mask != 0
-        (s, e) = active_range_bounds(src.desc, src_mask)
-        @inbounds @simd for i in s:e
-            dest.c[i] = src.c[i]
+        for (s, e) in active_ranges(src.desc, src_mask)
+            @inbounds @simd for i in s:e
+                dest.c[i] = src.c[i]
+            end
         end
     end
     dest.degree_mask[] = src_mask
@@ -1138,6 +1249,8 @@ end
 # O(active_range) instead of O(N).  Used by in-place math functions to reset
 # a workspace slot before writing — free for already-zero workspace slots
 # (degree_mask == 0 → no-op).
+# As in pool/workspace release, the entire value is discarded: clearing gaps
+# in the bounding interval is safe and avoids unnecessary per-run overhead.
 @inline function _zero_active!(ctps::CTPS{T}) where T
     dm = ctps.degree_mask[]
     if dm != 0
@@ -1152,23 +1265,17 @@ end
 # not yet written.  On first touch of a degree block we use = (initialise)
 # rather than += (accumulate) to avoid reading garbage.
 @inline function _add_scaled!(sum::CTPS{T}, term::CTPS{T}, scale::T) where T
+    _check_descriptors(sum, term)
     tm = term.degree_mask[]
-    (iszero(scale) || tm == 0) && return
-    sm        = sum.degree_mask[]
-    desc      = sum.desc
-    new_bits  = tm & ~sm    # degrees not yet written to sum → must initialise
-    accum_bits = tm &  sm   # degrees already written    → safe to accumulate
-    if new_bits != 0 && accum_bits != 0
-        # Mixed: zero the new blocks first, then accumulate the full tm range.
-        (s2, e2) = active_range_bounds(desc, new_bits)
-        @inbounds @simd for j in s2:e2; sum.c[j] = zero(T); end
-        (s, e) = active_range_bounds(desc, tm)
-        @inbounds @simd for j in s:e; sum.c[j] += term.c[j] * scale; end
-    elseif new_bits != 0
-        (s, e) = active_range_bounds(desc, new_bits)
+    (_prunable_zero(scale) || tm == 0) && return
+    sm = sum.degree_mask[]
+    desc = sum.desc
+    # Initialize new blocks and accumulate shared blocks independently. A
+    # bounding interval could erase an existing block between two new blocks.
+    for (s, e) in active_ranges(desc, tm & ~sm)
         @inbounds @simd for j in s:e; sum.c[j] = term.c[j] * scale; end
-    else
-        (s, e) = active_range_bounds(desc, accum_bits)
+    end
+    for (s, e) in active_ranges(desc, tm & sm)
         @inbounds @simd for j in s:e; sum.c[j] += term.c[j] * scale; end
     end
     sum.degree_mask[] = sm | tm
@@ -1194,6 +1301,8 @@ end
 #   for (i in di-block, j in dj-block) equals the index for (j in dj-block, i in
 #   di-block), because exp[i]+exp[j] == exp[j]+exp[i] (exponent addition commutes).
 function mul!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
+    _check_descriptors(result, ctps1)
+    _check_descriptors(ctps1, ctps2)
     desc  = ctps1.desc
     order = desc.order
     c1    = ctps1.c
@@ -1239,7 +1348,7 @@ function mul!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
                 @inbounds @fastmath for i_local in 1:Ni
                     ai = c1[i_base + i_local]
                     bi = c2[i_base + i_local]
-                    (iszero(ai) && iszero(bi)) && continue
+                    (_prunable_zero(ai) && _prunable_zero(bi)) && continue
                     @inbounds @fastmath for j_local in 1:i_local-1
                         kk = k_mat[j_local, i_local]
                         cr[kk] += ai * c2[j_base + j_local] +
@@ -1255,7 +1364,7 @@ function mul!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
                 @inbounds @fastmath for i_local in 1:Ni
                     ai = c1[i_base + i_local]   # c1 in di-block
                     bi = c2[i_base + i_local]   # c2 in di-block
-                    (iszero(ai) && iszero(bi)) && continue
+                    (_prunable_zero(ai) && _prunable_zero(bi)) && continue
                     @inbounds @fastmath for j_local in 1:Nj
                         kk = k_mat[j_local, i_local]
                         cr[kk] += ai * c2[j_base + j_local] +
@@ -1267,7 +1376,7 @@ function mul!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
                 # ── Forward only: c1[di] * c2[dj] ──────────────────────────
                 @inbounds @fastmath for i_local in 1:Ni
                     ai = c1[i_base + i_local]
-                    iszero(ai) && continue
+                    _prunable_zero(ai) && continue
                     @inbounds @fastmath for j_local in 1:Nj
                         cr[k_mat[j_local, i_local]] +=
                             ai * c2[j_base + j_local]
@@ -1278,7 +1387,7 @@ function mul!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
                 # ── Reverse only: c1[dj] * c2[di] ──────────────────────────
                 @inbounds @fastmath for i_local in 1:Ni
                     bi = c2[i_base + i_local]   # c2 in di-block
-                    iszero(bi) && continue
+                    _prunable_zero(bi) && continue
                     @inbounds @fastmath for j_local in 1:Nj
                         cr[k_mat[j_local, i_local]] +=
                             c1[j_base + j_local] * bi
@@ -1317,6 +1426,7 @@ end
 #     matching the pattern of sin/cos/exp which already work with Enzyme.
 #
 function compose!(result::CTPS{T}, f::CTPS{T}, g::AbstractVector{<:CTPS{T}}) where T
+    _check_descriptors(result, f)
     desc  = f.desc
     nv    = desc.nv
     N     = desc.N
@@ -1326,11 +1436,15 @@ function compose!(result::CTPS{T}, f::CTPS{T}, g::AbstractVector{<:CTPS{T}}) whe
     length(g) == nv ||
         error("compose!: expected $nv substitution polynomials, got $(length(g))")
 
+    for substitution in g
+        _check_descriptors(f, substitution)
+    end
+
     _zero_active!(result)
     fm == 0 && return result     # f is the zero polynomial
 
     # Constant term: result += f.c[1]
-    if (fm & UInt64(1)) != 0 && !iszero(f.c[1])
+    if (fm & UInt64(1)) != 0 && !_prunable_zero(f.c[1])
         result.c[1]          = f.c[1]
         result.degree_mask[] |= UInt64(1)
     end
@@ -1364,7 +1478,7 @@ function compose!(result::CTPS{T}, f::CTPS{T}, g::AbstractVector{<:CTPS{T}}) whe
         ((fm >> d) & UInt64(1)) == 0 && continue
 
         coeff = f.c[i]
-        iszero(coeff) || _add_scaled!(result, img, coeff)
+        _prunable_zero(coeff) || _add_scaled!(result, img, coeff)
     end
 
     return result
@@ -1398,13 +1512,10 @@ end
 
 # + (range-limited: only touches active degree range)
 function +(ctps1::CTPS{T}, ctps2::CTPS{T}) where T
-    if ctps1.desc !== ctps2.desc
-        if ctps1.desc.nv != ctps2.desc.nv || ctps1.desc.order != ctps2.desc.order
-            error("Cannot add CTPS with different descriptors: (nv=$(ctps1.desc.nv), order=$(ctps1.desc.order)) vs (nv=$(ctps2.desc.nv), order=$(ctps2.desc.order))")
-        end
-    end
-    c = Vector{T}(undef, ctps1.desc.N)
-    result = CTPS{T}(c, Ref(UInt64(0)))
+    _check_descriptors(ctps1, ctps2)
+    desc = ctps1.desc
+    c = Vector{T}(undef, desc.N)
+    result = CTPS{T}(c, desc, Ref(UInt64(0)))
     add!(result, ctps1, ctps2)
     return result
 end
@@ -1414,7 +1525,7 @@ function +(ctps::CTPS{T}, a::Number) where T
     m = ctps.degree_mask[]
     c0 = (m & UInt64(1) != 0) ? ctps.c[1] : zero(T)
     ctps_new.c[1] = c0 + T(a)
-    ctps_new.degree_mask[] = (m & ~UInt64(1)) | (iszero(ctps_new.c[1]) ? UInt64(0) : UInt64(1))
+    ctps_new.degree_mask[] = (m & ~UInt64(1)) | (_prunable_zero(ctps_new.c[1]) ? UInt64(0) : UInt64(1))
     return ctps_new
 end
 
@@ -1424,13 +1535,10 @@ end
 
 # - (range-limited)
 function -(ctps1::CTPS{T}, ctps2::CTPS{T}) where T
-    if ctps1.desc !== ctps2.desc
-        if ctps1.desc.nv != ctps2.desc.nv || ctps1.desc.order != ctps2.desc.order
-            error("Cannot subtract CTPS with different descriptors: (nv=$(ctps1.desc.nv), order=$(ctps1.desc.order)) vs (nv=$(ctps2.desc.nv), order=$(ctps2.desc.order))")
-        end
-    end
-    c = Vector{T}(undef, ctps1.desc.N)
-    result = CTPS{T}(c, Ref(UInt64(0)))
+    _check_descriptors(ctps1, ctps2)
+    desc = ctps1.desc
+    c = Vector{T}(undef, desc.N)
+    result = CTPS{T}(c, desc, Ref(UInt64(0)))
     sub!(result, ctps1, ctps2)
     return result
 end
@@ -1440,7 +1548,7 @@ function -(ctps::CTPS{T}, a::Number) where T
     m = ctps.degree_mask[]
     c0 = (m & UInt64(1) != 0) ? ctps.c[1] : zero(T)
     ctps_new.c[1] = c0 - T(a)
-    ctps_new.degree_mask[] = (m & ~UInt64(1)) | (iszero(ctps_new.c[1]) ? UInt64(0) : UInt64(1))
+    ctps_new.degree_mask[] = (m & ~UInt64(1)) | (_prunable_zero(ctps_new.c[1]) ? UInt64(0) : UInt64(1))
     return ctps_new
 end
 
@@ -1449,24 +1557,26 @@ function -(a::Number, ctps::CTPS{T}) where T
     desc = ctps.desc
     c = Vector{T}(undef, desc.N)   # lazy: only active range written
     if mask != 0
-        (s, e) = active_range_bounds(desc, mask)
-        @inbounds @simd for i in s:e
-            c[i] = -ctps.c[i]
+        for (s, e) in active_ranges(desc, mask)
+            @inbounds @simd for i in s:e
+                c[i] = -ctps.c[i]
+            end
         end
     end
     c0 = (mask & UInt64(1) != 0) ? -ctps.c[1] : zero(T)
     c[1] = c0 + T(a)
-    m_out = (mask & ~UInt64(1)) | (iszero(c[1]) ? UInt64(0) : UInt64(1))
-    return CTPS{T}(c, Ref(m_out))
+    m_out = (mask & ~UInt64(1)) | (_prunable_zero(c[1]) ? UInt64(0) : UInt64(1))
+    return CTPS{T}(c, desc, Ref(m_out))
 end
 
 function -(ctps::CTPS{T}) where T
     ctps_new = CTPS(ctps)   # range-limited copy
     mask = ctps.degree_mask[]
     if mask != 0
-        (s, e) = active_range_bounds(ctps.desc, mask)
-        @inbounds @simd for i in s:e
-            ctps_new.c[i] = -ctps_new.c[i]
+        for (s, e) in active_ranges(ctps.desc, mask)
+            @inbounds @simd for i in s:e
+                ctps_new.c[i] = -ctps_new.c[i]
+            end
         end
     end
     ctps_new.degree_mask[] = mask
@@ -1476,11 +1586,7 @@ end
 # * (allocating wrapper — delegates to mul! to avoid code duplication)
 function *(ctps1::CTPS{T}, ctps2::CTPS{T}) where T
     # Check descriptor compatibility
-    if ctps1.desc !== ctps2.desc
-        if ctps1.desc.nv != ctps2.desc.nv || ctps1.desc.order != ctps2.desc.order
-            error("Cannot multiply CTPS with different descriptors: (nv=$(ctps1.desc.nv), order=$(ctps1.desc.order)) vs (nv=$(ctps2.desc.nv), order=$(ctps2.desc.order))")
-        end
-    end
+    _check_descriptors(ctps1, ctps2)
     result = _ctps_zero(T, ctps1.desc)
     mul!(result, ctps1, ctps2)
     return result
@@ -1525,26 +1631,32 @@ function inv(ctps::CTPS{T}) where T
 end
 
 function /(ctps1::CTPS{T}, ctps2::CTPS{T}) where T
+    _check_descriptors(ctps1, ctps2)
     if cst(ctps2) == zero(T)
         error("Divide by zero in CTPS")
     end
     return ctps1 * inv(ctps2)
 end
 
-function /(ctps::CTPS{T}, a::T) where T
-    if a == zero(T)
+# Scalar division. The scalar may be any `Number` (e.g. an `Int` literal in
+# `ctps / 2`) and is converted to the coefficient type, matching `+`, `-`, `*`.
+# A single method per direction avoids the `(CTPS{T}, T)` / `(CTPS{T}, Number)`
+# specificity ambiguity that made `ctps / 2.0` recurse.
+function /(ctps::CTPS{T}, a::Number) where T
+    b = T(a)
+    if b == zero(T)
         error("Divide by zero in CTPS")
     end
-    ctps_new = CTPS(ctps)     # range-limited copy
-    scale!(ctps_new, one(T)/a) # range-limited scale
+    ctps_new = CTPS(ctps)       # range-limited copy
+    scale!(ctps_new, one(T)/b)  # range-limited scale
     return ctps_new
 end
 
-function /(a::T, ctps::CTPS{T}) where T
+function /(a::Number, ctps::CTPS{T}) where T
     if cst(ctps) == zero(T)
         error("Divide by zero in CTPS")
     end
-    return a * inv(ctps)
+    return T(a) * inv(ctps)
 end
 
 # exponential (zero loop allocations)
@@ -1576,6 +1688,7 @@ function exp(ctps::CTPS{T}) where T
 end
 
 function exp!(result::CTPS{T}, ctps::CTPS{T}) where T
+    _check_descriptors(result, ctps)
     a0 = cst(ctps)
     desc = ctps.desc
     # Fast path: polynomial is identically zero → exp(0) = 1 exactly.
@@ -1645,6 +1758,7 @@ function log(ctps::CTPS{T}) where T
 end
 
 function log!(result::CTPS{T}, ctps::CTPS{T}) where T
+    _check_descriptors(result, ctps)
     a0 = cst(ctps)
     if a0 == zero(T)
         error("Log of zero in CTPS")
@@ -1714,6 +1828,7 @@ function sqrt(ctps::CTPS{T}) where T
 end
 
 function sqrt!(result::CTPS{T}, ctps::CTPS{T}) where T
+    _check_descriptors(result, ctps)
     a0_val = cst(ctps)
     if T <: Real && a0_val < zero(T)
         error("Square root of negative number in CTPS")
@@ -1809,6 +1924,7 @@ end
 
 # In-place power: result = ctps^b  (b ≥ 0; uses pool for temporaries)
 function pow!(result::CTPS{T}, ctps::CTPS{T}, b::Int) where T
+    _check_descriptors(result, ctps)
     desc = ctps.desc
     if b == 0
         _zero_active!(result)
@@ -1890,6 +2006,7 @@ function sin(ctps::CTPS{T}) where T
 end
 
 function sin!(result::CTPS{T}, ctps::CTPS{T}) where T
+    _check_descriptors(result, ctps)
     a0 = cst(ctps)
     sin_a0 = Base.sin(a0)
     cos_a0 = Base.cos(a0)
@@ -1959,6 +2076,7 @@ function cos(ctps::CTPS{T}) where T
 end
 
 function cos!(result::CTPS{T}, ctps::CTPS{T}) where T
+    _check_descriptors(result, ctps)
     a0 = cst(ctps)
     sin_a0 = Base.sin(a0)
     cos_a0 = Base.cos(a0)
@@ -2076,6 +2194,7 @@ function asin(ctps::CTPS{T}) where T
 end
 
 function asin!(result::CTPS{T}, ctps::CTPS{T}) where T
+    _check_descriptors(result, ctps)
     a0 = cst(ctps)
     T <: Real && abs(a0) >= one(T) && error("asin domain error: |constant term| must be < 1")
     asin_a0 = Base.asin(a0)
@@ -2115,6 +2234,7 @@ function acos(ctps::CTPS{T}) where T
 end
 
 function acos!(result::CTPS{T}, ctps::CTPS{T}) where T
+    _check_descriptors(result, ctps)
     asin!(result, ctps)          # result = asin(ctps)
     scale!(result, -one(T))      # result = -asin(ctps);  degree_mask unchanged
     result.c[1] += T(π / 2)     # result = π/2 - asin(ctps) = acos(ctps)
@@ -2152,9 +2272,12 @@ function tan(ctps::CTPS{T}) where T
         is_odd = !is_odd
     end
 
-    sin_sum.c[1] += sin_a0
+    # The power-series loop only writes degrees >= 1, so the degree-0 slot of
+    # the (lazily allocated) sums is still uninitialized here: assign, do not
+    # accumulate. `+=` read garbage and made tan's constant term random.
+    sin_sum.c[1] = sin_a0
     sin_sum.degree_mask[] |= UInt64(1)
-    cos_sum.c[1] += cos_a0
+    cos_sum.c[1] = cos_a0
     cos_sum.degree_mask[] |= UInt64(1)
     return sin_sum / cos_sum
 end
@@ -2189,6 +2312,7 @@ function sinh(ctps::CTPS{T}) where T
 end
 
 function sinh!(result::CTPS{T}, ctps::CTPS{T}) where T
+    _check_descriptors(result, ctps)
     a0 = cst(ctps)
     sinh_a0 = Base.sinh(a0)
     cosh_a0 = Base.cosh(a0)
@@ -2253,6 +2377,7 @@ function cosh(ctps::CTPS{T}) where T
 end
 
 function cosh!(result::CTPS{T}, ctps::CTPS{T}) where T
+    _check_descriptors(result, ctps)
     a0 = cst(ctps)
     sinh_a0 = Base.sinh(a0)
     cosh_a0 = Base.cosh(a0)

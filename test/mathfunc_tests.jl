@@ -208,6 +208,14 @@ const TEST_HS         = [0.001 * i for i in 1:5]
         for h in TEST_HS
             @test _polyval(y, h) ≈ tan(MATHFUNC_A0 + h)  rtol=POINTWISE_TOL
         end
+        # Regression: the constant term used to be accumulated into an
+        # uninitialized slot, giving a random cst(tan(x)). Stress the allocator
+        # so a stale heap block is likely to be reused.
+        for _ in 1:200
+            junk = [CTPS(MATHFUNC_A0 + 0.1k, 1) * CTPS(0.3, 1) for k in 1:8]
+            @test cst(PolySeries.tan(CTPS(MATHFUNC_A0, 1))) ≈ tan(MATHFUNC_A0) rtol=1e-14
+            length(junk) == 8 || error()
+        end
     end
 
     @testset "sinh" begin

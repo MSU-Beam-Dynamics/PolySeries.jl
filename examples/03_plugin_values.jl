@@ -5,7 +5,7 @@ using PolySeries
 
 println("=== Plugging in Numerical Values ===\n")
 
-# Set up global descriptor
+# Set up this task's default descriptor
 set_descriptor!(3, 4)
 
 # Create a polynomial: f(x,y,z) = 1 + 2x + 3y + x^2 + xy + y^2

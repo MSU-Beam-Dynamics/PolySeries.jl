@@ -39,7 +39,7 @@ end
     val = T(a) + T(b)
     _zero_active!(out)
     out.c[1] = val
-    out.degree_mask[] = iszero(val) ? UInt64(0) : UInt64(1)
+    out.degree_mask[] = _prunable_zero(val) ? UInt64(0) : UInt64(1)
 end
 
 @inline function _tpsa_sub!(out::CTPS{T}, a::CTPS{T}, b::CTPS{T}) where T
@@ -54,13 +54,13 @@ end
     m  = out.degree_mask[]
     c0 = (m & UInt64(1) != 0) ? out.c[1] : zero(T)
     out.c[1] = c0 + T(a)
-    out.degree_mask[] = (m & ~UInt64(1)) | (iszero(out.c[1]) ? UInt64(0) : UInt64(1))
+    out.degree_mask[] = (m & ~UInt64(1)) | (_prunable_zero(out.c[1]) ? UInt64(0) : UInt64(1))
 end
 @inline function _tpsa_sub!(out::CTPS{T}, a::Real, b::Real) where T
     val = T(a) - T(b)
     _zero_active!(out)
     out.c[1] = val
-    out.degree_mask[] = iszero(val) ? UInt64(0) : UInt64(1)
+    out.degree_mask[] = _prunable_zero(val) ? UInt64(0) : UInt64(1)
 end
 
 @inline function _tpsa_mul!(out::CTPS{T}, a::CTPS{T}, b::CTPS{T}) where T
@@ -76,7 +76,7 @@ end
     val = T(a) * T(b)
     _zero_active!(out)
     out.c[1] = val
-    out.degree_mask[] = iszero(val) ? UInt64(0) : UInt64(1)
+    out.degree_mask[] = _prunable_zero(val) ? UInt64(0) : UInt64(1)
 end
 
 @inline function _tpsa_neg!(out::CTPS{T}, a::CTPS{T}) where T
@@ -86,7 +86,7 @@ end
     val = -T(a)
     _zero_active!(out)
     out.c[1] = val
-    out.degree_mask[] = iszero(val) ? UInt64(0) : UInt64(1)
+    out.degree_mask[] = _prunable_zero(val) ? UInt64(0) : UInt64(1)
 end
 
 @inline function _tpsa_pow!(out::CTPS{T}, a::CTPS{T}, b::Int) where T
@@ -96,7 +96,7 @@ end
     val = T(a)^b
     _zero_active!(out)
     out.c[1] = val
-    out.degree_mask[] = iszero(val) ? UInt64(0) : UInt64(1)
+    out.degree_mask[] = _prunable_zero(val) ? UInt64(0) : UInt64(1)
 end
 
 # ── AST helpers ───────────────────────────────────────────────────────────────

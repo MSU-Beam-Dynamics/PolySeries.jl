@@ -517,3 +517,30 @@ end
     rf = x + Float32(1.5)
     @test _coeff2(rf, 0, 0) ≈ 1.5
 end
+
+@testset "Lazy degree blocks: cst/element/math functions on zero-constant series" begin
+    # Coefficient blocks whose degree bit is clear are uninitialized memory.
+    # `cst` and `element` must go through the degree mask, and the math
+    # functions must expand about the *mathematical* constant term (zero here),
+    # not about whatever `c[1]` happens to hold. Allocate and discard series in
+    # between so that stale heap blocks are likely to be reused.
+    set_descriptor!(2, 4)
+    for trial in 1:100
+        junk = [CTPS(0.7 + 0.01trial, 1) * CTPS(1.3, 2) + 5.0 for _ in 1:8]
+        x = CTPS(0.0, 1)                    # pure variable: degree-0 bit clear
+        @test cst(x) == 0.0
+        @test element(x, [0, 0, 0]) == 0.0
+        y = x / (CTPS(2.0, 2) + 1.0)        # mul! output band starts at degree 1
+        @test cst(y) == 0.0
+        @test cst(x * x) == 0.0
+        # asin(x) = x + x^3/6 + ...; sin(x) = x - x^3/6; sqrt(1 + x) constant 1
+        @test element(asin(x), [1, 1, 0]) ≈ 1.0 atol=1e-14
+        @test cst(asin(x)) == 0.0
+        @test element(asin(x), [3, 3, 0]) ≈ 1/6 atol=1e-14
+        @test element(sin(x), [3, 3, 0]) ≈ -1/6 atol=1e-14
+        @test cst(exp(x)) ≈ 1.0 atol=1e-14
+        @test element(tan(x), [1, 1, 0]) ≈ 1.0 atol=1e-14
+        @test cst(tan(x)) == 0.0
+        length(junk) == 8 || error()
+    end
+end

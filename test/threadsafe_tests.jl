@@ -1,31 +1,11 @@
 # Tests for thread safety
 @testset "Descriptor caching thread safety" begin
-    nv = 3
-    order = 4
-    
-    # Create multiple CTPS instances with same parameters from different "threads"
-    # (simulated by sequential calls - actual threading would require Threads.@threads)
-    instances = [CTPS(Float64, nv, order) for _ in 1:10]
-    
-    # All should share the same descriptor
-    desc1 = instances[1].desc
-    for inst in instances
-        @test inst.desc === desc1  # Same object reference
-    end
+    tasks = [Threads.@spawn PSDesc(3, 4) for _ in 1:16]
+    descriptors = fetch.(tasks)
+    @test all(d -> d === descriptors[1], descriptors)
 end
 
-@testset "Global descriptor switching" begin
-    # After set_descriptor!, ctps.desc returns the new active descriptor
-    d1 = set_descriptor!(2, 3)
-    x = CTPS(Float64, 2, 3)
-    @test x.desc === d1
-
-    d2 = set_descriptor!(3, 4)
-    y = CTPS(Float64)
-    @test y.desc === d2
-    # x.desc also reflects the current global (no per-instance copy)
-    @test x.desc === d2
-end
+include("descriptor_ownership_tests.jl")
 
 @testset "Descriptor immutability" begin
     x = CTPS(Float64, 2, 3)
@@ -55,13 +35,13 @@ end
     PolySeries.update_degree_mask!(x1)
     PolySeries.update_degree_mask!(x2)
     
-    # Perform multiplication multiple times
-    # Each should produce identical results (deterministic)
-    results = [begin
-        r = CTPS(Float64, nv, order)
+    # Share read-only operands and their descriptor, with an output per task.
+    tasks = [Threads.@spawn begin
+        r = CTPS(Float64, x1.desc)
         PolySeries.mul!(r, x1, x2)
         copy(r.c)
-    end for _ in 1:5]
+    end for _ in 1:8]
+    results = fetch.(tasks)
     
     # All results should be identical
     for r in results[2:end]

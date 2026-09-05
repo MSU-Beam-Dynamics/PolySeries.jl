@@ -1,7 +1,21 @@
 # Tests for the PolySeriesEnzymeExt package extension.
-# This file is only included when Enzyme is available (see runtests.jl).
+# Enzyme is a required dependency; failures must not be skipped by the runner.
 
 using Enzyme
+
+include("enzyme_zero_tests.jl")
+
+@testset "Enzyme with an explicitly owned descriptor" begin
+    desc = PSDesc(1, 4)
+    f = a -> cst(exp(CTPS(a, 1, desc)))
+    set_descriptor!(2, 3)
+    for a in (0.0, 0.5)
+        @test Enzyme.gradient(Reverse, f, a)[1] ≈ exp(a)
+    end
+    clear_descriptor!()
+    @test Enzyme.gradient(Reverse, f, 0.0)[1] ≈ 1.0
+    @test Enzyme.autodiff(Forward, f, Duplicated(0.0, 1.0))[1] ≈ 1.0
+end
 
 @testset "PolySeriesEnzymeExt — extension loads" begin
     ext = Base.get_extension(PolySeries, :PolySeriesEnzymeExt)
@@ -14,6 +28,7 @@ end
     @test Enzyme.EnzymeRules.inactive_type(PolySeries.PolyMap)      == true
     @test Enzyme.EnzymeRules.inactive_type(PolySeries.MulSchedule2D) == true
     @test Enzyme.EnzymeRules.inactive_type(PolySeries.CompPlan)     == true
+    @test Enzyme.EnzymeRules.inactive_type(PolySeries.DescriptorRegistry) == true
 end
 
 @testset "PolySeriesEnzymeExt — Enzyme.gradient through CTPS (single variable)" begin

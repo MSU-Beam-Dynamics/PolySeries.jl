@@ -20,5 +20,10 @@ EnzymeRules.inactive_type(::Type{<:PolySeries.DescPool})      = true
 EnzymeRules.inactive_type(::Type{<:PolySeries.PolyMap})       = true
 EnzymeRules.inactive_type(::Type{<:PolySeries.MulSchedule2D}) = true
 EnzymeRules.inactive_type(::Type{<:PolySeries.CompPlan})      = true
+EnzymeRules.inactive_type(::Type{<:PolySeries.DescriptorRegistry}) = true
+
+# The task default is construction metadata, not a differentiable input. Keep
+# Enzyme out of the task-local dictionary used to retrieve this descriptor.
+EnzymeRules.inactive(::typeof(PolySeries.get_descriptor)) = nothing
 
 end # module

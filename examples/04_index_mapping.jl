@@ -5,7 +5,7 @@ using PolySeries
 
 println("=== Index Mapping and Coefficient Access ===\n")
 
-# Set up global descriptor
+# Set up this task's default descriptor
 set_descriptor!(3, 3)
 
 # Create a TPSA

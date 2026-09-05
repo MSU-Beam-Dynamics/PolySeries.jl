@@ -10,7 +10,7 @@ println("=== Building Matrices from TPSA Results ===\n")
 # We have a map: (x', y', px', py') = F(x, y, px, py)
 # where each output is a TPSA representing a nonlinear function
 
-# Set up global descriptor
+# Set up this task's default descriptor
 set_descriptor!(4, 3)  # 4 phase space variables, order 3
 
 println("Phase space variables: x, y, px, py")

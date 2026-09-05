@@ -30,15 +30,17 @@ using PolySeries
         include("arithmetic_tests.jl")
     end
 
+    @testset "Degree Mask Regression" begin
+        include("degree_mask_tests.jl")
+    end
+
     @testset "Composition" begin
         include("composition_tests.jl")
     end
 
     @testset "Extension: PolySeriesEnzymeExt" begin
-        try
-            include("ext_enzyme_test.jl")
-        catch e
-            @warn "Skipping PolySeriesEnzymeExt tests (Enzyme unavailable): $e"
-        end
+        # Enzyme is a required dependency. Import/compiler failures must fail
+        # the suite rather than silently skip differentiation regressions.
+        include("ext_enzyme_test.jl")
     end
 end

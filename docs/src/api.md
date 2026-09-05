@@ -13,10 +13,14 @@ The core type representing a truncated power series with coefficient type `T`.
 ```julia
 struct CTPS{T}
     c           :: Vector{T}       # coefficient vector, length desc.N
-    desc        :: PSDesc        # shared descriptor
+    descriptor_id :: Int         # stable descriptor identity
     degree_mask :: Ref{UInt64}     # bitmask — bit k set iff degree-k block is active
 end
 ```
+
+The `p.desc` property resolves the descriptor captured by `p` at construction.
+It does not consult the current task default. The numeric handle keeps constant
+metadata separate from differentiable coefficient storage in Enzyme.
 
 The coefficient vector is ordered by total degree, then lexicographically:
 index 1 is the constant term; indices 2…nv+1 are the degree-1 (linear) terms; and so on.
@@ -29,7 +33,20 @@ CTPS(a::Real)                   # scalar constant a
 CTPS(T::Type)                   # all-zero series (use as pre-allocated output)
 ```
 
-All constructors use the descriptor registered with `set_descriptor!`.
+The constructors above use the descriptor registered with `set_descriptor!`.
+
+Alternatively, pass a descriptor explicitly without changing the task default:
+
+```julia
+desc = PSDesc(2, 4)
+x = CTPS(0.0, 1, desc)
+c = CTPS(3.0, desc)
+out = CTPS(Float64, desc)
+```
+
+Each polynomial retains its descriptor. Changing or clearing a task's default
+does not change existing polynomials. Operations on incompatible descriptors
+throw `DimensionMismatch` before mutating coefficient buffers.
 
 ---
 
@@ -38,20 +55,23 @@ All constructors use the descriptor registered with `set_descriptor!`.
 Descriptor holding shared metadata for a TPSA space `(nv, order)`.
 
 ```julia
-struct PSDesc
-    nv        :: Int                    # number of variables
-    order     :: Int                    # maximum total degree
-    N         :: Int                    # total coefficient count = C(nv+order, nv)
-    Nd        :: Vector{Int}            # Nd[d+1] = number of monomials of total degree d
-    off       :: Vector{Int}            # off[d+1] = 1-based start index of degree-d block
-    polymap   :: PolyMap                # index → exponent mapping
-    exp_to_idx :: Dict                  # SVector{nv,UInt8} → Int (reverse lookup)
-    mul       :: ...                    # 2-D multiplication schedules
-    comp_plan :: ...                    # composition plan
+mutable struct PSDesc
+    const id        :: Int             # stable context identity
+    const nv        :: Int             # number of variables
+    const order     :: Int             # maximum total degree
+    const N         :: Int             # total coefficient count = C(nv+order, nv)
+    const Nd        :: Vector{Int}     # number of monomials per degree
+    const off       :: Vector{Int}     # start index per degree
+    const polymap   :: PolyMap         # index → exponent mapping
+    const exp_to_idx :: Dict           # exponent → index
+    const mul       :: ...             # multiplication schedules
+    const comp_plan :: ...             # composition plan
 end
 ```
 
 Obtain via `get_descriptor()` after calling `set_descriptor!`.
+`PSDesc(nv, order)` also returns a cached descriptor without setting a default.
+Its fields cannot be reassigned; treat the shared index tables as read-only.
 
 **Useful fields:**
 - `desc.N` — total number of coefficients per series
@@ -93,17 +113,17 @@ end
 set_descriptor!(nv::Int, order::Int)
 ```
 Create a descriptor for a space with `nv` variables and maximum degree `order`,
-and register it as the thread-local default.
+and register it as the task-local default.
 
 ```julia
 desc = get_descriptor()
 ```
-Return the current thread-local descriptor.  Throws if none is registered.
+Return the current task-local descriptor.  Throws if none is registered.
 
 ```julia
 clear_descriptor!()
 ```
-Deregister the thread-local descriptor.
+Deregister the task-local descriptor.
 
 ---
 
@@ -213,7 +233,7 @@ release!(ws, t)                # return t to pool (active range zeroed)
 `borrow!` pops from a stack of pre-allocated objects.  `release!` calls
 `_zero_active!` on the returned slot (O(active) zeroing) and pushes it back.
 
-**The pool is not thread-safe.** Create one workspace per thread.
+**The pool is not thread-safe.** Create one workspace per concurrent task.
 
 ---
 

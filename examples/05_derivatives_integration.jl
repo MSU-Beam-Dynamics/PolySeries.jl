@@ -5,7 +5,7 @@ using PolySeries
 
 println("=== Derivatives, Integration, and Composition ===\n")
 
-# Set up global descriptor
+# Set up this task's default descriptor
 set_descriptor!(2, 4)
 
 x = CTPS(0.0, 1)

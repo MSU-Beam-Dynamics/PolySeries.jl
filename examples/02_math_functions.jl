@@ -5,7 +5,7 @@ using PolySeries
 
 println("=== Mathematical Functions ===\n")
 
-# Set up global descriptor
+# Set up this task's default descriptor
 set_descriptor!(2, 4)
 
 # Create variables

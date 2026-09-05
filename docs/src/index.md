@@ -47,7 +47,7 @@ Pkg.add("PolySeries")
 ```julia
 using PolySeries
 
-# 1. Register the global descriptor (once per thread / session)
+# 1. Register this task's default descriptor
 set_descriptor!(3, 6)          # 3 independent variables, max order 6
 
 # 2. Create variables
@@ -79,8 +79,8 @@ or used only in the advanced zero-allocation API.
 
 | Function | Description |
 |----------|-------------|
-| `set_descriptor!(nv, order)` | Create and register a global descriptor |
-| `get_descriptor()` | Retrieve the current thread-local descriptor |
+| `set_descriptor!(nv, order)` | Create and register this task's default descriptor |
+| `get_descriptor()` | Retrieve the current task-local descriptor |
 | `clear_descriptor!()` | Remove the current descriptor |
 
 ### Construction

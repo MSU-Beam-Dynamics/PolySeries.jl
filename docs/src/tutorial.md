@@ -6,7 +6,7 @@ A step-by-step introduction to the key features of PolySeries.jl.
 
 ## 1. Setup
 
-Every session starts by registering a **global descriptor** that defines the number of variables and the maximum polynomial order.  All `CTPS` objects created afterward share this metadata automatically.
+Register a **task-local default descriptor** to choose the number of variables and maximum polynomial order for new objects. Each `CTPS` retains its construction descriptor: changing or clearing the default does not change existing polynomials. Operations between different descriptors throw `DimensionMismatch` before writing coefficients.
 
 ```julia
 using PolySeries
@@ -232,14 +232,14 @@ nx1 = CTPS(0.0, 1)   # pre-allocated output
 
 ## 9. Thread Safety
 
-Each thread should use its own descriptor and workspace:
+Descriptors may be shared. Each task must initialize its own default or pass a descriptor explicitly. Workspaces must not be shared by concurrent tasks:
 
 ```julia
 using Base.Threads
 
 results = Vector{Float64}(undef, nthreads())
 @threads for tid in 1:nthreads()
-    set_descriptor!(4, 6)           # thread-local initialization
+    set_descriptor!(4, 6)           # task-local initialization
     desc = get_descriptor()
     ws   = PSWorkspace(desc, 16)
     # ... compute ...

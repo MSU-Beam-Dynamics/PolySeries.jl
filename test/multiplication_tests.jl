@@ -132,19 +132,22 @@ end
     # x * y = xy;  all other terms must be zero
     result = x * y
     
+    # Read through the mask-aware accessor: coefficient blocks whose degree
+    # bit is clear are mathematically zero but hold uninitialized memory.
     desc = result.desc
     for i in 1:desc.N
         exp_vec = PolySeries.getindexmap(desc.polymap, i)
+        coeff = element(result, collect(Int, exp_vec))
         degree = exp_vec[1]
         e1, e2 = exp_vec[2], exp_vec[3]
         if degree == 2 && e1 == 1 && e2 == 1          # xy term
-            @test result.c[i] ≈ 1.0
+            @test coeff ≈ 1.0
         elseif degree == 0                              # constant
-            @test result.c[i] ≈ 0.0  atol=1e-15
+            @test coeff ≈ 0.0  atol=1e-15
         elseif degree == 1                              # linear terms
-            @test result.c[i] ≈ 0.0  atol=1e-15
+            @test coeff ≈ 0.0  atol=1e-15
         elseif degree == 2 && (e1 == 2 || e2 == 2)    # pure-square terms
-            @test result.c[i] ≈ 0.0  atol=1e-15
+            @test coeff ≈ 0.0  atol=1e-15
         end
     end
 end

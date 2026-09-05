@@ -10,6 +10,7 @@
 
 module PolySeries
 using StaticArrays
+using EnzymeCore: within_autodiff
 include("mathfunc.jl")
 include("polymap.jl")
 include("ctps.jl")

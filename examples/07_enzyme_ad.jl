@@ -186,6 +186,9 @@ Key rules for PolySeries + Enzyme
      +, -, *, /, ^n,  exp, log, sqrt, sin, cos, tan, asin, acos, sinh, cosh
 
 4. Access results with cst(f) or element(f, exponents) — both work.
+   Zero expansion centers and zero-valued coefficients retain their derivatives.
+   PolySeries keeps initialized zeros active during AD; ordinary evaluation
+   still uses the sparse degree masks to avoid reading uninitialized storage.
 
 5. Do NOT differentiate through in-place/pool-based variants:
      exp!(out, f),  sin!(out, f),  mul!(out, a, b), …

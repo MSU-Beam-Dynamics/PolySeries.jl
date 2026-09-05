@@ -3,7 +3,7 @@
 
 using PolySeries
 
-# Set up the global descriptor once - all TPSA objects will use this
+# Set up this task's default descriptor for new TPSA objects
 set_descriptor!(3, 4)  # 3 variables, maximum order 4
 
 println("=== Basic TPSA Operations ===\n")
