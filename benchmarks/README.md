@@ -22,6 +22,20 @@ Benchmarks mathematical functions:
 ### benchmark_multiplication.jl
 Detailed multiplication performance analysis across different problem sizes.
 
+### benchmark_composition.jl
+Compares retained images, ordinary depth-first evaluation, and a reusable
+`CompositionWorkspace` for dense and sparse sources with identity and shifted
+maps. It uses only Julia's built-in timing/allocation tools. Run from the root:
+
+```bash
+julia --compiled-modules=existing --project=. benchmarks/benchmark_composition.jl
+```
+
+Descriptor and workspace construction and compilation are outside timing.
+CSV output reports the minimum of five warm runs and allocated bytes per call.
+The 8,008-monomial retained baseline is skipped by default; use
+`--large-baseline` to include its roughly 489 MiB coefficient allocation.
+
 ## Running Benchmarks
 
 **Prerequisites:**

@@ -175,6 +175,37 @@ All operators below return a new `CTPS`; inputs are not modified.
 
 ---
 
+## Composition
+
+```julia
+h = compose(f, g)
+compose!(out, f, g)
+workspace = CompositionWorkspace(f.desc, Float64)
+compose!(out, f, g, workspace)
+```
+
+These compute `f(g[1], …, g[nv])`, truncated to the descriptor order.
+All polynomials and the workspace must have the same descriptor and coefficient
+type. The output must not alias `f` or any member of `g`. A workspace can be
+reused across different polynomials and substitution maps, but must not be
+shared by concurrent calls.
+
+Ordinary composition visits the parent-monomial tree depth first and retains
+only one image per depth. It needs `(order + 1) * N` coefficient slots plus
+O(N) metadata, and skips branches that do not contribute to nonzero source
+coefficients. Inactive coefficient storage is never read. For `Float64`, the
+workspace overload allocates zero bytes after setup; types such as `BigFloat`
+still allocate during scalar arithmetic.
+
+Enzyme differentiation automatically uses a separate retained-image path.
+That path preserves derivative dependencies at zero-valued coefficients and
+still has O(N²) worst-case coefficient storage. The ordinary workspace memory
+bound does **not** apply to reverse differentiation. Reuse changes the order of
+floating-point accumulation, so final rounding may differ from the retained
+path.
+
+---
+
 ## Mathematical functions
 
 ### Allocating (return new `CTPS`)

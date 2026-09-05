@@ -61,3 +61,33 @@ end
     exact = cos(x0) * cos(y0) + exp(x0)
     @test abs(g[1] - exact) < 1e-10
 end
+
+@testset "Composition retains derivative paths at zero" begin
+    set_descriptor!(1, 3)
+    function composition_coefficient(a)
+        x = CTPS(0.0, 1)
+        f = a*x^2 + x
+        return cst(compose(f, [CTPS(2.0, 1)]))
+    end
+    function composition_center(a)
+        x = CTPS(0.0, 1)
+        return cst(compose(x + x^2, [CTPS(a, 1)]))
+    end
+    for a in (0.0, 0.5)
+        @test Enzyme.gradient(Reverse, composition_coefficient, a)[1] ≈ 4.0
+        @test Enzyme.gradient(Reverse, composition_center, a)[1] ≈ 1 + 2a
+    end
+end
+
+@testset "Explicit composition workspace is bypassed during AD" begin
+    set_descriptor!(1, 3)
+    ws = CompositionWorkspace(get_descriptor())
+    function composition_workspace_derivative(a)
+        x = CTPS(0.0, 1)
+        out = CTPS(Float64)
+        compose!(out, a*x^2 + x, [CTPS(2.0, 1)], ws)
+        return cst(out)
+    end
+    @test Enzyme.gradient(Reverse, composition_workspace_derivative, 0.0)[1] ≈ 4.0
+    @test !any(ws.needed)
+end

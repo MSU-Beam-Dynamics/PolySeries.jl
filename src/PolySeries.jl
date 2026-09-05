@@ -17,6 +17,7 @@ include("ctps.jl")
 export CTPS, PSDesc, pow, cst, element, findindex # assign!, reassign!
 export add!, addto!, sub!, subfrom!, scale!, scaleadd!, copy!, zero!, mul!, compose!, compose
 export set_descriptor!, get_descriptor, clear_descriptor!
+export CompositionWorkspace
 export PSWorkspace, borrow!, release!, decomposite
 export sin!, cos!, exp!, log!, sqrt!, sinh!, cosh!, asin!, acos!
 export pow!

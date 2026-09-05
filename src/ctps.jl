@@ -43,8 +43,7 @@ MulSchedule2D() = MulSchedule2D(Matrix{Int32}(undef, 0, 0),
 # so a single forward pass through [2..N] builds all images correctly.
 #
 # n_children[i] = number of j > i with par_idx[j] == i.
-# Used in compose! to release images early (set to nothing) once all children
-# are processed — equivalent to reference counting, O(1) per monomial.
+# Available for traversal planning; ordinary composition uses depth-first reuse.
 struct CompPlan
     par_idx    :: Vector{Int32}   # parent monomial index (1-based); element 1 unused
     par_var    :: Vector{Int8}    # which variable to multiply (1-based); element 1 unused
@@ -1415,30 +1414,109 @@ function mul!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
 end
 
 # ── CTPS Composition ─────────────────────────────────────────────────────────
-#
-# compose!(result, f, g) computes  h(x) = f(g[1](x), …, g[nv](x))  in-place.
-#
-# Algorithm — parent-monomial tree  (O(N) mul! calls, one per monomial):
-#
-#   mono_img[1] = CTPS(1.0)                               # constant monomial
-#   mono_img[i] = g[par_var[i]] * mono_img[par_idx[i]]   # one mul! per i ≥ 2
-#   result       = Σᵢ  f.c[i] * mono_img[i]              # via _add_scaled!
-#
-# par_idx / par_var are precomputed in desc.comp_plan (build_comp_plan).
-# par_idx[i] < i for all i ≥ 2 (deglex ordering), so a single forward pass
-# through [2..N] builds all images correctly.
-#
-# Enzyme compatibility:
-#   • mono_img is Vector{CTPS{T}} (typed), NOT Vector{Any} — Enzyme can
-#     build a proper shadow for each element and trace gradients through the
-#     coefficient vectors.
-#   • All images are kept alive until the function returns.  The early-release
-#     trick (setting to `nothing`) is incompatible with Enzyme's reverse pass,
-#     which needs to re-read primal values stored in the forward pass.
-#   • _ctps_constant / _ctps_zero allocate fresh heap CTPS objects (no pool),
-#     matching the pattern of sin/cos/exp which already work with Enzyme.
-#
+
+"""
+    CompositionWorkspace(desc::PSDesc, T::Type = Float64)
+
+Reusable storage for `compose!(result, f, g, workspace)`. Ordinary evaluation
+uses one coefficient vector per tree depth: `(desc.order + 1) * desc.N`
+coefficients, plus O(N) tree metadata. Unused monomial branches are skipped.
+A workspace must not be shared by concurrent calls. Enzyme differentiation
+uses a separate retained-image implementation instead of this scratch storage.
+"""
+struct CompositionWorkspace{T}
+    desc::PSDesc
+    images::Vector{CTPS{T}}
+    first_child::Vector{Int32}
+    next_sibling::Vector{Int32}
+    needed::BitVector
+end
+
+function CompositionWorkspace(desc::PSDesc, ::Type{T}=Float64) where T
+    first_child = zeros(Int32, desc.N)
+    next_sibling = zeros(Int32, desc.N)
+    for i in desc.N:-1:2
+        parent = Int(desc.comp_plan.par_idx[i])
+        next_sibling[i] = first_child[parent]
+        first_child[parent] = Int32(i)
+    end
+    images = [_ctps_zero(T, desc) for _ in 0:desc.order]
+    return CompositionWorkspace(desc, images, first_child, next_sibling, falses(desc.N))
+end
+
+@inline function _check_composition(result, f, g)
+    _check_descriptors(result, f)
+    length(g) == f.desc.nv ||
+        error("compose!: expected $(f.desc.nv) substitution polynomials, got $(length(g))")
+    for substitution in g
+        _check_descriptors(f, substitution)
+    end
+    return nothing
+end
+
+# Visit children while retaining only the path from the root. A sibling can
+# overwrite the previous child's image after its entire subtree is consumed.
+function _compose_children!(result::CTPS{T}, f::CTPS{T}, g,
+                            ws::CompositionWorkspace{T}, parent::Int, depth::Int) where T
+    i = Int(ws.first_child[parent])
+    while i != 0
+        if ws.needed[i]
+            img = ws.images[depth + 1]
+            mul!(img, g[Int(ws.desc.comp_plan.par_var[i])], ws.images[depth])
+            degree = Int(ws.desc.polymap.map[i, 1])
+            if (f.degree_mask[] & (UInt64(1) << degree)) != 0
+                coeff = f.c[i]
+                iszero(coeff) || _add_scaled!(result, img, coeff)
+            end
+            _compose_children!(result, f, g, ws, i, depth + 1)
+        end
+        i = Int(ws.next_sibling[i])
+    end
+    return result
+end
+
 function compose!(result::CTPS{T}, f::CTPS{T}, g::AbstractVector{<:CTPS{T}}) where T
+    if within_autodiff()
+        return _compose_retained!(result, f, g)
+    end
+    _check_composition(result, f, g)
+    return compose!(result, f, g, CompositionWorkspace(f.desc, T))
+end
+
+function compose!(result::CTPS{T}, f::CTPS{T}, g::AbstractVector{<:CTPS{T}},
+                  ws::CompositionWorkspace{T}) where T
+    if within_autodiff()
+        return _compose_retained!(result, f, g)
+    end
+    _check_composition(result, f, g)
+    ws.desc === f.desc || throw(DimensionMismatch("Composition workspace descriptor must match inputs"))
+    fill!(ws.needed, false)
+    # Read only active degrees; their inactive neighbours may contain poison
+    # or uninitialized references. Mark ancestors in one reverse-index pass.
+    for (s, e) in active_ranges(f.desc, f.degree_mask[])
+        for i in s:e
+            ws.needed[i] = !iszero(f.c[i])
+        end
+    end
+    for i in f.desc.N:-1:2
+        ws.needed[i] && (ws.needed[Int(f.desc.comp_plan.par_idx[i])] = true)
+    end
+    _zero_active!(result)
+    ws.needed[1] || return result
+    root = ws.images[1]
+    root.c[1] = one(T)
+    root.degree_mask[] = UInt64(1)
+    if (f.degree_mask[] & UInt64(1)) != 0
+        result.c[1] = f.c[1]
+        iszero(f.c[1]) || (result.degree_mask[] = UInt64(1))
+    end
+    return _compose_children!(result, f, g, ws, 1, 1)
+end
+
+# Differentiation retains all images: reverse mode may need primal values
+# after the forward traversal. Do not apply numeric coefficient pruning here,
+# since a zero-valued coefficient can have a nonzero derivative.
+function _compose_retained!(result::CTPS{T}, f::CTPS{T}, g::AbstractVector{<:CTPS{T}}) where T
     _check_descriptors(result, f)
     desc  = f.desc
     nv    = desc.nv
@@ -1504,9 +1582,11 @@ Compose `f` with the substitution map `g`:
 
     h(x) = f(g[1](x), g[2](x), …, g[nv](x))
 
-Uses the precomputed parent-monomial tree in `desc.comp_plan` so that each
-monomial image is built with exactly **one** `mul!` call — O(N) multiplications
-total where N = total number of coefficient basis monomials.
+Uses a depth-first parent-monomial traversal, with at most one multiplication
+per needed monomial and O(N * order) coefficient storage. Pass a reusable
+`CompositionWorkspace` as the fourth argument to `compose!` to reuse storage.
+Enzyme uses a retained-image path with O(N²) worst-case coefficient storage.
+The result must not alias `f` or any member of `g`.
 
 # Example
 ```julia

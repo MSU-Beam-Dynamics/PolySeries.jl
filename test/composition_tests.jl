@@ -224,3 +224,84 @@ end
         @test h(a, b) ≈ f(a + 1.0, b)   rtol=1e-12
     end
 end
+
+@testset "Composition workspace: pruning and reuse" begin
+    for T in (Float64, BigFloat)
+        desc = PSDesc(3, 6)
+        x, y, z = [CTPS(zero(T), i, desc) for i in 1:3]
+        ws = CompositionWorkspace(desc, T)
+        out = CTPS(T, desc)
+        f = x^6 + T(2)*z^2
+        # Inactive storage is deliberately invalid for arithmetic.
+        for d in 0:desc.order
+            if f.degree_mask[] & (UInt64(1) << d) == 0
+                fill!(view(f.c, desc.off[d+1]:desc.off[d+1]+desc.Nd[d+1]-1), T(NaN))
+            end
+        end
+        g = [x + one(T), y + z, z - one(T)]
+        expected = (x + one(T))^6 + T(2)*(z - one(T))^2
+        compose!(out, f, g, ws)
+        for i in 1:desc.N
+            ind = Int.(desc.polymap.map[i, 2:end])
+            @test element(out, ind) ≈ element(expected, ind)
+        end
+        # Only root, x..x^6, z and z² belong to the required tree.
+        @test count(ws.needed) == 9
+        @test length(ws.images) == 7
+        @test sum(length(img.c) for img in ws.images) == 7desc.N
+        compose!(out, CTPS(T(3), desc), g, ws)
+        @test cst(out) == T(3)
+        @test out.degree_mask[] == UInt64(1)
+        compose!(out, CTPS(T, desc), g, ws)
+        @test out.degree_mask[] == 0
+        @test count(ws.needed) == 0
+        compose!(out, f, g, ws)
+        @test cst(out) == T(3)
+    end
+end
+
+@testset "Composition workspace: memory and validation" begin
+    desc = PSDesc(4, 6)
+    g = [CTPS(0.0, i, desc) for i in 1:4]
+    f = CTPS(Float64, desc)
+    fill!(f.c, 1.0)
+    f.degree_mask[] = UInt64(0x7f)
+    out = CTPS(Float64, desc)
+    ws = CompositionWorkspace(desc)
+    compose!(out, f, g, ws)
+    @test out.c == f.c
+    @test (@allocated compose!(out, f, g, ws)) == 0
+    compose!(out, f, g)
+    # Full-order inputs must not restore the previous N-by-N allocation.
+    @test (@allocated compose!(out, f, g)) < sizeof(Float64)*desc.N^2 ÷ 4
+    @test_throws DimensionMismatch compose!(out, f, g, CompositionWorkspace(PSDesc(1, 4)))
+    @test out.c == f.c
+    @test_throws ErrorException compose!(out, f, g[1:3], ws)
+    @test out.c == f.c
+    # Order zero has only the root, with no multiplication buffers needed.
+    d0 = PSDesc(1, 0)
+    out0 = CTPS(Float64, d0)
+    compose!(out0, CTPS(2.0, d0), [CTPS(5.0, d0)], CompositionWorkspace(d0))
+    @test cst(out0) == 2.0
+end
+
+@testset "Depth-first composition agrees with retained images" begin
+    for T in (Float64, BigFloat)
+        d = PSDesc(2, 4)
+        x, y = [CTPS(zero(T), i, d) for i in 1:2]
+        f = CTPS(T, d)
+        for i in 1:d.N
+            f.c[i] = T((-1)^i) / T(i)
+        end
+        f.degree_mask[] = UInt64(0x1f)
+        g = [x + y^2 + T(0.5), x - y + T(0.25)]
+        expected = CTPS(T, d)
+        PolySeries._compose_retained!(expected, f, g)
+        out = CTPS(T, d)
+        compose!(out, f, g, CompositionWorkspace(d, T))
+        for i in 1:d.N
+            ind = Int.(d.polymap.map[i, 2:end])
+            @test element(out, ind) ≈ element(expected, ind) rtol=T(1e-12) atol=T(1e-14)
+        end
+    end
+end
