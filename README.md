@@ -6,7 +6,7 @@ PolySeries.jl computes multivariate Taylor expansions of arbitrary functions to 
 
 ## Highlights
 
-- **Automatic differentiation to any order** — all partial derivatives up to the chosen order emerge as coefficients of the series.
+- **Automatic differentiation through order 63** — all partial derivatives up to the chosen order emerge as coefficients of the series.
 - **[Enzyme.jl compatible](examples/07_enzyme_ad.jl)** — differentiate through TPSA computations to get sensitivities of Taylor coefficients w.r.t. scalar design parameters.
 - **Sparse degree-mask representation** — only active degree blocks are touched; constant-only inputs have near-zero overhead.
 - **Lazy-zero allocation** — temporaries use `undef` memory; the `degree_mask` invariant ensures garbage outside the active range is never read.
@@ -50,7 +50,7 @@ println(element(f, [1, 2]))   # → -0.5
 ## Quick reference
 
 ```julia
-# Default descriptor (local to this task)
+# Default descriptor (local to this task; orders 0–63)
 set_descriptor!(nv, order)
 desc = get_descriptor()
 clear_descriptor!()

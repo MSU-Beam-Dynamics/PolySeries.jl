@@ -125,8 +125,11 @@ retain their descriptors. Initialize the default in each task that needs it,
 or pass a descriptor explicitly to CTPS constructors.
 
 # Arguments
-- `nv::Int`: Number of variables
-- `order::Int`: Maximum order
+- `nv::Int`: Number of variables (1–127)
+- `order::Int`: Maximum order (0–63)
+
+Descriptors with more than `typemax(Int32)` coefficients are rejected before
+allocation. Invalid requests leave the current default unchanged.
 
 # Example
 ```julia
@@ -166,6 +169,10 @@ const DESC_CACHE_LOCK = ReentrantLock()
 
 # Constructor with caching (thread-safe)
 function PSDesc(nv::Int, order::Int)
+    1 <= nv <= typemax(Int8) ||
+        throw(ArgumentError("Number of variables must be between 1 and $(typemax(Int8)) (composition variable indices use Int8)"))
+    0 <= order <= 63 ||
+        throw(ArgumentError("Polynomial order must be between 0 and 63 (degree masks use UInt64)"))
     key = (nv, order)
     
     # Thread-safe cache lookup: always acquire lock
@@ -178,7 +185,13 @@ function PSDesc(nv::Int, order::Int)
         end
         
         # Compute total number of coefficients
-        N = binomial(nv + order, order)
+        # Check the schedule/index representation before allocating any tables.
+        # BigInt is used only on cache misses, so even enormous requests fail
+        # with a useful error instead of overflowing an intermediate Int.
+        count = binomial(big(nv + order), order)
+        count <= typemax(Int32) ||
+            throw(ArgumentError("Descriptor exceeds the $(typemax(Int32))-coefficient limit of Int32 indices"))
+        N = Int(count)
         
         # Compute size per degree (number of monomials at each degree)
         Nd = zeros(Int, order + 1)
@@ -1612,7 +1625,7 @@ function inv(ctps::CTPS{T}) where T
     inv_c0 = one(T) / c0
 
     temp = CTPS(ctps)
-    temp.c[1] -= c0
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     neg_temp_over_c0 = CTPS(temp)
@@ -1671,17 +1684,19 @@ function exp(ctps::CTPS{T}) where T
     ctps.degree_mask[] == 0 && return _ctps_constant(one(T), desc)
 
     temp = CTPS(ctps)          # heap copy
-    temp.c[1] -= a0
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     term      = _ctps_constant(one(T), desc)
     term_next = _ctps_zero(T, desc)      # pre-allocated; swapped each iteration
     sum       = _ctps_constant(one(T), desc)
 
+    inv_fac = one(T)
     for i in 1:desc.order
+        inv_fac /= T(i)
         mul!(term_next, term, temp)
         term, term_next = term_next, term  # swap bindings — zero-cost, no copy
-        _add_scaled!(sum, term, T(1.0 / factorial(i)))
+        _add_scaled!(sum, term, inv_fac)
     end
     scale!(sum, T(Base.exp(a0)))
     return sum
@@ -1705,7 +1720,7 @@ function exp!(result::CTPS{T}, ctps::CTPS{T}) where T
     result.degree_mask[] = UInt64(1)
 
     (idx_temp, temp)      = _ctps_pooled_copy(ctps, desc)
-    temp.c[1] -= a0
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     (idx_term, term)      = _ctps_pooled(T, desc)
@@ -1714,10 +1729,12 @@ function exp!(result::CTPS{T}, ctps::CTPS{T}) where T
 
     (idx_tn,   term_next) = _ctps_pooled(T, desc)
 
+    inv_fac = one(T)
     for i in 1:desc.order
+        inv_fac /= T(i)
         mul!(term_next, term, temp)
         copy!(term, term_next)
-        _add_scaled!(result, term, T(1.0 / factorial(i)))
+        _add_scaled!(result, term, inv_fac)
     end
 
     scale!(result, T(Base.exp(a0)))
@@ -1735,7 +1752,7 @@ function log(ctps::CTPS{T}) where T
     inv_a0 = one(T) / a0
 
     temp = CTPS(ctps)
-    temp.c[1] -= a0
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     term = CTPS(temp)
@@ -1750,7 +1767,7 @@ function log(ctps::CTPS{T}) where T
     for i in 2:desc.order
         mul!(term_next, term, neg_temp_over_a0)
         term, term_next = term_next, term  # swap bindings — zero-cost, no copy
-        _add_scaled!(sum, term, T(1.0 / i))
+        _add_scaled!(sum, term, one(T) / T(i))
     end
     sum.c[1] = Base.log(a0)
     sum.degree_mask[] |= UInt64(1)
@@ -1767,7 +1784,7 @@ function log!(result::CTPS{T}, ctps::CTPS{T}) where T
     inv_a0 = one(T) / a0
 
     (idx_temp, temp) = _ctps_pooled_copy(ctps, desc)
-    temp.c[1] -= a0
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     (idx_term, term) = _ctps_pooled_copy(temp, desc)
@@ -1783,7 +1800,7 @@ function log!(result::CTPS{T}, ctps::CTPS{T}) where T
     for i in 2:desc.order
         mul!(term_next, term, neg_temp_over_a0)
         copy!(term, term_next)
-        _add_scaled!(result, term, T(1.0 / i))
+        _add_scaled!(result, term, one(T) / T(i))
     end
 
     result.c[1] = Base.log(a0)
@@ -1803,7 +1820,7 @@ function sqrt(ctps::CTPS{T}) where T
     desc = ctps.desc
 
     temp = CTPS(ctps)
-    temp.c[1] -= a0_val
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     term = CTPS(temp)
@@ -1813,14 +1830,15 @@ function sqrt(ctps::CTPS{T}) where T
     scale!(neg_temp_over_a0, -one(T) / a0_val)
 
     sum      = CTPS(term)
-    scale!(sum, T(0.5))
+    coeff = one(T) / T(2)
+    scale!(sum, coeff)
     term_buf = _ctps_zero(T, desc)      # pre-allocated; swapped each iteration
 
     for i in 2:desc.order
+        coeff *= T(2i - 3) / T(2i)
         mul!(term_buf, term, neg_temp_over_a0)
         term, term_buf = term_buf, term  # swap bindings — zero-cost, no copy
-        _add_scaled!(sum, term,
-            T(doublefactorial(2 * i - 3)) / T(doublefactorial(2 * i)))
+        _add_scaled!(sum, term, coeff)
     end
     sum.c[1] = a0
     sum.degree_mask[] |= UInt64(1)
@@ -1837,7 +1855,7 @@ function sqrt!(result::CTPS{T}, ctps::CTPS{T}) where T
     desc = ctps.desc
 
     (idx_temp, temp) = _ctps_pooled_copy(ctps, desc)
-    temp.c[1] -= a0_val
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     (idx_term, term) = _ctps_pooled_copy(temp, desc)
@@ -1849,13 +1867,14 @@ function sqrt!(result::CTPS{T}, ctps::CTPS{T}) where T
     scale!(neg_temp_over_a0, -one(T) / a0_val)
 
     copy!(result, term)
-    scale!(result, T(0.5))
+    coeff = one(T) / T(2)
+    scale!(result, coeff)
 
     for i in 2:desc.order
+        coeff *= T(2i - 3) / T(2i)
         mul!(temp_mul, term, neg_temp_over_a0)
         copy!(term, temp_mul)
-        _add_scaled!(result, term,
-            T(doublefactorial(2 * i - 3)) / T(doublefactorial(2 * i)))
+        _add_scaled!(result, term, coeff)
     end
 
     result.c[1] = a0
@@ -1983,7 +2002,7 @@ function sin(ctps::CTPS{T}) where T
     desc   = ctps.desc
 
     temp = CTPS(ctps)
-    temp.c[1] -= a0
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     term      = _ctps_constant(one(T), desc)
@@ -1991,12 +2010,14 @@ function sin(ctps::CTPS{T}) where T
     sum       = _ctps_zero(T, desc)
 
     is_odd = true
+    inv_fac = one(T)
     for i in 1:desc.order
+        inv_fac /= T(i)
         mul!(term_next, term, temp)
         term, term_next = term_next, term  # swap bindings — zero-cost, no copy
         coeff = is_odd ?
-            cos_a0 * T((-1)^((i-1)÷2)) / T(factorial(i)) :
-            sin_a0 * T((-1)^(i÷2))     / T(factorial(i))
+            cos_a0 * T((-1)^((i-1)÷2)) * inv_fac :
+            sin_a0 * T((-1)^(i÷2))     * inv_fac
         _add_scaled!(sum, term, coeff)
         is_odd = !is_odd
     end
@@ -2015,7 +2036,7 @@ function sin!(result::CTPS{T}, ctps::CTPS{T}) where T
     _zero_active!(result)   # O(active_range) reset; no-op for fresh workspace slots
 
     (idx_temp, temp)      = _ctps_pooled_copy(ctps, desc)
-    temp.c[1] -= a0
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     (idx_term, term)      = _ctps_pooled(T, desc)
@@ -2025,13 +2046,15 @@ function sin!(result::CTPS{T}, ctps::CTPS{T}) where T
     (idx_tn,   term_next) = _ctps_pooled(T, desc)
 
     is_odd = true
+    inv_fac = one(T)
     for i in 1:desc.order
+        inv_fac /= T(i)
         mul!(term_next, term, temp)
         copy!(term, term_next)
         coeff = if is_odd
-            cos_a0 * T((-1) ^ ((i - 1) ÷ 2)) / T(factorial(i))
+            cos_a0 * T((-1) ^ ((i - 1) ÷ 2)) * inv_fac
         else
-            sin_a0 * T((-1) ^ (i ÷ 2)) / T(factorial(i))
+            sin_a0 * T((-1) ^ (i ÷ 2)) * inv_fac
         end
         _add_scaled!(result, term, coeff)
         is_odd = !is_odd
@@ -2052,7 +2075,7 @@ function cos(ctps::CTPS{T}) where T
     desc   = ctps.desc
 
     temp = CTPS(ctps)
-    temp.c[1] -= a0
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     term      = _ctps_constant(one(T), desc)
@@ -2060,12 +2083,14 @@ function cos(ctps::CTPS{T}) where T
     sum       = _ctps_zero(T, desc)
 
     is_odd = true
+    inv_fac = one(T)
     for i in 1:desc.order
+        inv_fac /= T(i)
         mul!(term_next, term, temp)
         term, term_next = term_next, term  # swap bindings — zero-cost, no copy
         coeff = is_odd ?
-            sin_a0 * T((-1)^((i+1)÷2)) / T(factorial(i)) :
-            cos_a0 * T((-1)^(i÷2))     / T(factorial(i))
+            sin_a0 * T((-1)^((i+1)÷2)) * inv_fac :
+            cos_a0 * T((-1)^(i÷2))     * inv_fac
         _add_scaled!(sum, term, coeff)
         is_odd = !is_odd
     end
@@ -2085,7 +2110,7 @@ function cos!(result::CTPS{T}, ctps::CTPS{T}) where T
     _zero_active!(result)
 
     (idx_temp, temp)      = _ctps_pooled_copy(ctps, desc)
-    temp.c[1] -= a0
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     (idx_term, term)      = _ctps_pooled(T, desc)
@@ -2095,13 +2120,15 @@ function cos!(result::CTPS{T}, ctps::CTPS{T}) where T
     (idx_tn,   term_next) = _ctps_pooled(T, desc)
 
     is_odd = true
+    inv_fac = one(T)
     for i in 1:desc.order
+        inv_fac /= T(i)
         mul!(term_next, term, temp)
         copy!(term, term_next)
         coeff = if is_odd
-            sin_a0 * T((-1) ^ ((i + 1) ÷ 2)) / T(factorial(i))
+            sin_a0 * T((-1) ^ ((i + 1) ÷ 2)) * inv_fac
         else
-            cos_a0 * T((-1) ^ (i ÷ 2)) / T(factorial(i))
+            cos_a0 * T((-1) ^ (i ÷ 2)) * inv_fac
         end
         _add_scaled!(result, term, coeff)
         is_odd = !is_odd
@@ -2176,7 +2203,7 @@ function asin(ctps::CTPS{T}) where T
     A = _asin_coeffs(a0, order)
 
     temp = CTPS(ctps)
-    temp.c[1] -= a0
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     term      = _ctps_constant(one(T), desc)
@@ -2206,7 +2233,7 @@ function asin!(result::CTPS{T}, ctps::CTPS{T}) where T
     _zero_active!(result)
 
     (idx_temp, temp) = _ctps_pooled_copy(ctps, desc)
-    temp.c[1] -= a0
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     (idx_term, term) = _ctps_pooled(T, desc)
@@ -2230,14 +2257,14 @@ end
 
 # arccos
 function acos(ctps::CTPS{T}) where T
-    return T(π / 2) - asin(ctps)
+    return (T(π) / T(2)) - asin(ctps)
 end
 
 function acos!(result::CTPS{T}, ctps::CTPS{T}) where T
     _check_descriptors(result, ctps)
     asin!(result, ctps)          # result = asin(ctps)
     scale!(result, -one(T))      # result = -asin(ctps);  degree_mask unchanged
-    result.c[1] += T(π / 2)     # result = π/2 - asin(ctps) = acos(ctps)
+    result.c[1] += (T(π) / T(2))     # result = π/2 - asin(ctps) = acos(ctps)
     result.degree_mask[] |= UInt64(1)  # degree-0 term is always non-zero
     return result
 end
@@ -2250,7 +2277,7 @@ function tan(ctps::CTPS{T}) where T
     desc = ctps.desc
 
     temp = CTPS(ctps)
-    temp.c[1] -= a0
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     term      = _ctps_constant(one(T), desc)
@@ -2259,10 +2286,11 @@ function tan(ctps::CTPS{T}) where T
     cos_sum   = _ctps_zero(T, desc)
 
     is_odd = true
+    inv_fac = one(T)
     for i in 1:desc.order
+        inv_fac /= T(i)
         mul!(term_next, term, temp)
         term, term_next = term_next, term  # swap bindings — zero-cost, no copy
-        inv_fac   = T(1.0 / factorial(i))
         sin_coeff = is_odd ? cos_a0 * T((-1) ^ ((i - 1) ÷ 2)) * inv_fac :
                              sin_a0 * T((-1) ^ (i ÷ 2))        * inv_fac
         cos_coeff = is_odd ? sin_a0 * T((-1) ^ ((i + 1) ÷ 2)) * inv_fac :
@@ -2290,7 +2318,7 @@ function sinh(ctps::CTPS{T}) where T
     desc = ctps.desc
 
     temp = CTPS(ctps)
-    temp.c[1] -= a0
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     term      = _ctps_constant(one(T), desc)
@@ -2298,10 +2326,12 @@ function sinh(ctps::CTPS{T}) where T
     sum       = _ctps_zero(T, desc)      # heap-allocated (returned)
 
     is_odd = true
+    inv_fac = one(T)
     for i in 1:desc.order
+        inv_fac /= T(i)
         mul!(term_next, term, temp)
         term, term_next = term_next, term  # swap bindings — zero-cost, no copy
-        coeff = is_odd ? cosh_a0 / T(factorial(i)) : sinh_a0 / T(factorial(i))
+        coeff = is_odd ? cosh_a0 * inv_fac : sinh_a0 * inv_fac
         _add_scaled!(sum, term, coeff)
         is_odd = !is_odd
     end
@@ -2321,7 +2351,7 @@ function sinh!(result::CTPS{T}, ctps::CTPS{T}) where T
     _zero_active!(result)
 
     (idx_temp, temp)      = _ctps_pooled_copy(ctps, desc)
-    temp.c[1] -= a0
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     (idx_term, term)      = _ctps_pooled(T, desc)
@@ -2331,10 +2361,12 @@ function sinh!(result::CTPS{T}, ctps::CTPS{T}) where T
     (idx_tn,   term_next) = _ctps_pooled(T, desc)
 
     is_odd = true
+    inv_fac = one(T)
     for i in 1:desc.order
+        inv_fac /= T(i)
         mul!(term_next, term, temp)
         copy!(term, term_next)
-        coeff = is_odd ? cosh_a0 / T(factorial(i)) : sinh_a0 / T(factorial(i))
+        coeff = is_odd ? cosh_a0 * inv_fac : sinh_a0 * inv_fac
         _add_scaled!(result, term, coeff)
         is_odd = !is_odd
     end
@@ -2355,7 +2387,7 @@ function cosh(ctps::CTPS{T}) where T
     desc = ctps.desc
 
     temp = CTPS(ctps)
-    temp.c[1] -= a0
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     term      = _ctps_constant(one(T), desc)
@@ -2363,10 +2395,12 @@ function cosh(ctps::CTPS{T}) where T
     sum       = _ctps_zero(T, desc)      # heap-allocated (returned)
 
     is_odd = true
+    inv_fac = one(T)
     for i in 1:desc.order
+        inv_fac /= T(i)
         mul!(term_next, term, temp)
         term, term_next = term_next, term  # swap bindings — zero-cost, no copy
-        coeff = is_odd ? sinh_a0 / T(factorial(i)) : cosh_a0 / T(factorial(i))
+        coeff = is_odd ? sinh_a0 * inv_fac : cosh_a0 * inv_fac
         _add_scaled!(sum, term, coeff)
         is_odd = !is_odd
     end
@@ -2386,7 +2420,7 @@ function cosh!(result::CTPS{T}, ctps::CTPS{T}) where T
     _zero_active!(result)
 
     (idx_temp, temp)      = _ctps_pooled_copy(ctps, desc)
-    temp.c[1] -= a0
+    temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
 
     (idx_term, term)      = _ctps_pooled(T, desc)
@@ -2396,10 +2430,12 @@ function cosh!(result::CTPS{T}, ctps::CTPS{T}) where T
     (idx_tn,   term_next) = _ctps_pooled(T, desc)
 
     is_odd = true
+    inv_fac = one(T)
     for i in 1:desc.order
+        inv_fac /= T(i)
         mul!(term_next, term, temp)
         copy!(term, term_next)
-        coeff = is_odd ? sinh_a0 / T(factorial(i)) : cosh_a0 / T(factorial(i))
+        coeff = is_odd ? sinh_a0 * inv_fac : cosh_a0 * inv_fac
         _add_scaled!(result, term, coeff)
         is_odd = !is_odd
     end

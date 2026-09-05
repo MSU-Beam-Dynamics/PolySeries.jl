@@ -71,6 +71,13 @@ end
 
 Obtain via `get_descriptor()` after calling `set_descriptor!`.
 `PSDesc(nv, order)` also returns a cached descriptor without setting a default.
+
+Supported orders are **0–63**, with **1–127 variables** and at most
+`typemax(Int32)` coefficients. Invalid sizes throw `ArgumentError` before table
+allocation and leave the current default unchanged. These are representation
+limits; practical sizes also depend on available memory. Transcendental series
+coefficients are computed in the coefficient type, including `BigFloat`, without
+machine-integer factorials.
 Its fields cannot be reassigned; treat the shared index tables as read-only.
 
 **Useful fields:**
