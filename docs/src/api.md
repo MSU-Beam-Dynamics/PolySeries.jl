@@ -232,6 +232,13 @@ sin!(out, f);   cos!(out, f)
 sinh!(out, f);  cosh!(out, f)
 ```
 
+The unary in-place functions support using the same polynomial as input and
+output, for example `exp!(p, p)` or `sin!(p, p)`. This also applies to `log!`,
+`sqrt!`, `cos!`, `sinh!`, `cosh!`, `asin!`, `acos!`, and `pow!` with nonnegative
+integer exponents. Input coefficients are preserved before the output is
+cleared. Ordinary Float64 calls reuse internal pool storage when slots are
+available; Enzyme differentiation uses independently allocated temporaries.
+
 The `!` variants use `_zero_active!` internally: only the active degree range is
 zeroed before recomputing, giving O(active) cost instead of O(N).
 

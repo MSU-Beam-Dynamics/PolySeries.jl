@@ -26,6 +26,14 @@ using PolySeries
         include("mathfunc_tests.jl")
     end
 
+    @testset "Math Aliasing" begin
+        include("math_alias_tests.jl")
+    end
+
+    @testset "Logarithm Pool Safety" begin
+        include("log_pool_tests.jl")
+    end
+
     @testset "Order Limits" begin
         include("order_limits_tests.jl")
     end

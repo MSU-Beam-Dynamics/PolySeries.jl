@@ -437,6 +437,9 @@ end
 #   No-op for idx == 0x00 (heap fallback; GC handles it).
 
 @inline function _ctps_pooled(::Type{Float64}, desc::PSDesc)
+    # Differentiation needs typed, independently owned primal/shadow storage.
+    # The pool's cached objects are metadata and must not enter Enzyme's tape.
+    within_autodiff() && return (UInt8(0), _ctps_zero(Float64, desc))
     tid = Threads.threadid()
     if tid <= length(desc._pools)
         pool = desc._pools[tid]
@@ -456,6 +459,7 @@ end
 end
 
 @inline function _ctps_pooled_copy(src::CTPS{Float64}, desc::PSDesc)
+    within_autodiff() && return (UInt8(0), CTPS(src))
     tid = Threads.threadid()
     if tid <= length(desc._pools)
         pool = desc._pools[tid]
@@ -1803,13 +1807,14 @@ function exp!(result::CTPS{T}, ctps::CTPS{T}) where T
         return result
     end
 
-    _zero_active!(result)
-    result.c[1] = one(T)
-    result.degree_mask[] = UInt64(1)
-
     (idx_temp, temp)      = _ctps_pooled_copy(ctps, desc)
     temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
+
+    # Capture the input before clearing an output that may share its storage.
+    _zero_active!(result)
+    result.c[1] = one(T)
+    result.degree_mask[] = UInt64(1)
 
     (idx_term, term)      = _ctps_pooled(T, desc)
     term.c[1] = one(T)
@@ -1868,6 +1873,9 @@ function log!(result::CTPS{T}, ctps::CTPS{T}) where T
     if a0 == zero(T)
         error("Log of zero in CTPS")
     end
+    # Validate the scalar logarithm before borrowing scratch buffers or
+    # modifying result, so domain errors cannot leak internal pool capacity.
+    log_a0 = Base.log(a0)
     desc   = ctps.desc
     inv_a0 = one(T) / a0
 
@@ -1891,7 +1899,7 @@ function log!(result::CTPS{T}, ctps::CTPS{T}) where T
         _add_scaled!(result, term, one(T) / T(i))
     end
 
-    result.c[1] = Base.log(a0)
+    result.c[1] = log_a0
     result.degree_mask[] |= UInt64(1)
     _pool_release!(idx_temp, temp,             desc)
     _pool_release!(idx_term, term,             desc)
@@ -2041,6 +2049,16 @@ function pow!(result::CTPS{T}, ctps::CTPS{T}, b::Int) where T
     end
     b == 1 && (copy!(result, ctps); return result)
     b < 0  && error("pow!(result, ctps, b) with b < 0 not supported; use inv(pow(ctps,-b))")
+    # The square/cube shortcuts multiply directly into result. Preserve the
+    # base when output shares its coefficient buffer, including another wrapper.
+    if (b == 2 || b == 3) && result.c === ctps.c
+        idx, input = _ctps_pooled_copy(ctps, desc)
+        try
+            return pow!(result, input, b)
+        finally
+            _pool_release!(idx, input, desc)
+        end
+    end
     if b == 2
         mul!(result, ctps, ctps)
         return result
@@ -2121,11 +2139,12 @@ function sin!(result::CTPS{T}, ctps::CTPS{T}) where T
     cos_a0 = Base.cos(a0)
     desc = ctps.desc
 
-    _zero_active!(result)   # O(active_range) reset; no-op for fresh workspace slots
-
     (idx_temp, temp)      = _ctps_pooled_copy(ctps, desc)
     temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
+
+    # Capture the input before clearing an output that may share its storage.
+    _zero_active!(result)   # O(active_range) reset; no-op for fresh workspace slots
 
     (idx_term, term)      = _ctps_pooled(T, desc)
     term.c[1] = one(T)
@@ -2195,11 +2214,12 @@ function cos!(result::CTPS{T}, ctps::CTPS{T}) where T
     cos_a0 = Base.cos(a0)
     desc = ctps.desc
 
-    _zero_active!(result)
-
     (idx_temp, temp)      = _ctps_pooled_copy(ctps, desc)
     temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
+
+    # Capture the input before clearing an output that may share its storage.
+    _zero_active!(result)
 
     (idx_term, term)      = _ctps_pooled(T, desc)
     term.c[1] = one(T)
@@ -2318,11 +2338,12 @@ function asin!(result::CTPS{T}, ctps::CTPS{T}) where T
 
     A = _asin_coeffs(a0, order)
 
-    _zero_active!(result)
-
     (idx_temp, temp) = _ctps_pooled_copy(ctps, desc)
     temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
+
+    # Capture the input before clearing an output that may share its storage.
+    _zero_active!(result)
 
     (idx_term, term) = _ctps_pooled(T, desc)
     term.c[1] = one(T)
@@ -2436,11 +2457,12 @@ function sinh!(result::CTPS{T}, ctps::CTPS{T}) where T
     cosh_a0 = Base.cosh(a0)
     desc = ctps.desc
 
-    _zero_active!(result)
-
     (idx_temp, temp)      = _ctps_pooled_copy(ctps, desc)
     temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
+
+    # Capture the input before clearing an output that may share its storage.
+    _zero_active!(result)
 
     (idx_term, term)      = _ctps_pooled(T, desc)
     term.c[1] = one(T)
@@ -2505,11 +2527,12 @@ function cosh!(result::CTPS{T}, ctps::CTPS{T}) where T
     cosh_a0 = Base.cosh(a0)
     desc = ctps.desc
 
-    _zero_active!(result)
-
     (idx_temp, temp)      = _ctps_pooled_copy(ctps, desc)
     temp.c[1] = zero(T)
     temp.degree_mask[] &= ~UInt64(1)
+
+    # Capture the input before clearing an output that may share its storage.
+    _zero_active!(result)
 
     (idx_term, term)      = _ctps_pooled(T, desc)
     term.c[1] = one(T)

@@ -93,3 +93,5 @@ end
     @test Enzyme.gradient(Reverse, composition_workspace_derivative, 0.0)[1] ≈ 4.0
     @test !any(ws.needed)
 end
+
+include("enzyme_alias_tests.jl")
