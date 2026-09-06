@@ -19,7 +19,7 @@ PolySeries.jl computes multivariate Taylor expansions of arbitrary functions to 
 ```julia
 using Pkg
 Pkg.add("PolySeries")          # once registered; until then:
-Pkg.add(url="https://github.com/your-org/PolySeries.jl")
+Pkg.add(url="https://github.com/MSU-Beam-Dynamics/PolySeries.jl")
 ```
 
 ## Minimal example
