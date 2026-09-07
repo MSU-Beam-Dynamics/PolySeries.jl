@@ -9,7 +9,7 @@ makedocs(
         edit_link = "main",
     ),
     modules = [PolySeries],
-    warnonly = [:missing_docs],
+    checkdocs = :exports,
     pages = [
         "Home"          => "index.md",
         "Tutorial"      => "tutorial.md",

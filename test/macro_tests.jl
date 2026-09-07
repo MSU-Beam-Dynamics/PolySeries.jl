@@ -2,7 +2,7 @@ using Test, PolySeries
 
 @testset "Documented macro expressions" begin
     root = dirname(@__DIR__)
-    for path in ("README.md", "docs/src/index.md", "docs/src/tutorial.md", "src/macro.jl")
+    for path in ("docs/src/index.md", "docs/src/tutorial.md", "src/macro.jl")
         source = read(joinpath(root, path), String)
         sandbox = Module(gensym(:MacroExample))
         setup = """
@@ -12,24 +12,22 @@ using Test, PolySeries
             x1 = x = CTPS(0.0, 1); x2 = y = CTPS(0.0, 2)
             x3 = z = CTPS(0.0, 3)
             nx = CTPS(Float64, desc)
+            nx1 = nx
             θ = 2π * 0.205
+            μ = θ
             """
         Base.include_string(sandbox, setup)
-        # Run complete tutorial/docstring blocks; the other snippets use
-        # the context above. Read source so documentation changes are tested.
-        code = if endswith(path, "tutorial.md")
-            section = split(source, "## 8. The `@tpsa` Macro")[2]
-            match(r"```julia\n(.*?)```"s, section).captures[1]
-        elseif endswith(path, ".jl")
-            match(r"```julia\n(.*?)```"s, source).captures[1]
-        else
-            match(r"^@tpsa .*"m, source).match
-        end
+        # Execute the documented assignment directly. README snippets have a
+        # separate extraction test because its quick-reference setup is
+        # intentionally self-contained and uses a two-variable descriptor.
+        assignment = match(r"^@tpsa\s+\S+\s+(\w+)\s*=.*$"m, source)
+        @test assignment !== nothing
+        code = assignment.match
         @test begin
             Base.include_string(sandbox, code, path)
             true
         end
-        result = Base.invokelatest(getfield, sandbox, (endswith(path, "tutorial.md") || endswith(path, ".jl")) ? :nx1 : :nx)
+        result = Base.invokelatest(getfield, sandbox, Symbol(assignment.captures[1]))
         θ = 2π * 0.205
         for (ind, expected) in (([1,0,0,0], cos(θ)), ([0,1,0,0], sin(θ)),
                                 ([2,0,0,0], sin(θ)), ([0,0,2,0], -sin(θ)))

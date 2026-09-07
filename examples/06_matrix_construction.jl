@@ -3,6 +3,7 @@
 
 using PolySeries
 using LinearAlgebra
+using Printf
 
 println("=== Building Matrices from TPSA Results ===\n")
 
@@ -46,23 +47,13 @@ desc = x.desc
 # Build 4x4 Jacobian matrix
 jacobian = zeros(4, 4)
 
-# Map output to row, input variables to columns
+# Map output rows to input-variable columns.
 outputs = [x_out, y_out, px_out, py_out]
-input_indices = [2, 3, 4, 5]  # Coefficient indices for x, y, px, py (variables 1-4 are at indices 2-5)
 
 for (row, output) in enumerate(outputs)
-    for (col, var_idx) in enumerate(input_indices)
-        # Find the linear term coefficient
-        # Linear terms have degree=1 and single non-zero exponent
-        for idx in 1:desc.N
-            exp_vec = PolySeries.getindexmap(desc.polymap, idx)
-            if exp_vec[1] == 1  # degree 1 (linear)
-                if exp_vec[col+1] == 1  # This variable (col+1 because exp_vec[1] is degree)
-                    jacobian[row, col] = output.c[idx]
-                    break
-                end
-            end
-        end
+    for col in 1:4
+        exponents = [variable == col ? 1 : 0 for variable in 1:4]
+        jacobian[row, col] = element(output, exponents)
     end
 end
 
@@ -76,7 +67,7 @@ println()
 println("--- Method 2: Extract Constant Terms (Offset) ---")
 offset = zeros(4)
 for (i, output) in enumerate(outputs)
-    offset[i] = output.c[1]  # Index 1 is always the constant term
+    offset[i] = cst(output)
 end
 println("Offset vector: ", offset)
 println()
@@ -93,11 +84,13 @@ for (i, output) in enumerate(outputs)
     term_count = 0
     for idx in 1:desc.N
         exp_vec = PolySeries.getindexmap(desc.polymap, idx)
-        if exp_vec[1] == 2 && abs(output.c[idx]) > 1e-10  # degree 2
+        exponents = Int.(exp_vec[2:end])
+        coefficient = element(output, exponents)
+        if exp_vec[1] == 2 && !iszero(coefficient)
             term_count += 1
             # Convert indices to variable names
             vars = ["x", "y", "px", "py"]
-            exps = exp_vec[2:5]
+            exps = exponents
             
             # Build term string
             term = ""
@@ -113,7 +106,7 @@ for (i, output) in enumerate(outputs)
                 end
             end
             
-            @printf("  %s: %8.4f\n", term, output.c[idx])
+            @printf("  %s: %8.4f\n", term, coefficient)
         end
     end
     
@@ -149,5 +142,7 @@ println("M^T S M (should equal S for symplectic map):")
 display(M_transpose_S_M)
 println()
 println("Is symplectic? ", isapprox(M_transpose_S_M, S, atol=1e-10))
+
+@assert offset == zeros(4)
 
 println("\n✓ Matrix construction demonstration completed!")

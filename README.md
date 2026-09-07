@@ -1,5 +1,8 @@
 # PolySeries.jl
 
+[![CI](https://github.com/MSU-Beam-Dynamics/PolySeries.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/MSU-Beam-Dynamics/PolySeries.jl/actions/workflows/CI.yml)
+[![codecov](https://codecov.io/gh/MSU-Beam-Dynamics/PolySeries.jl/graph/badge.svg)](https://codecov.io/gh/MSU-Beam-Dynamics/PolySeries.jl)
+
 **Truncated Power Series Algebra for Julia**
 
 PolySeries.jl computes multivariate Taylor expansions of arbitrary functions to high orders. It overloads all standard arithmetic operators and transcendental functions so that code written for ordinary `Float64` scalars also works for `CTPS` objects (struct of PolySeries) — producing exact Taylor series rather than single numbers.
@@ -24,6 +27,7 @@ Pkg.add(url="https://github.com/MSU-Beam-Dynamics/PolySeries.jl")
 
 ## Minimal example
 
+<!-- readme-test -->
 ```julia
 using PolySeries
 
@@ -34,8 +38,10 @@ y = CTPS(0.0, 2)         # variable y
 
 f = exp(x) * sin(y)      # Taylor series of e^x sin(y) through order 6
 
-# Extract the coefficient of x¹ y² (i.e., ∂³f/∂x ∂y²|₀ / 1! 2!)
-println(element(f, [1, 2]))   # → -0.5
+# Extract the coefficient of x¹y¹ (i.e., ∂²f/∂x∂y|₀ / 1!1!)
+coefficient = element(f, [1, 1])
+println(coefficient)          # → 1.0
+@assert coefficient == 1.0
 ```
 
 ## Documentation
@@ -49,29 +55,27 @@ println(element(f, [1, 2]))   # → -0.5
 
 ## Quick reference
 
+<!-- readme-test -->
 ```julia
-# Default descriptor (local to this task; orders 0–63)
-set_descriptor!(nv, order)
-desc = get_descriptor()
-clear_descriptor!()
+using PolySeries
 
-# Explicit descriptor construction (also works without a task default)
+# Explicit descriptors keep examples independent of task-local state.
 desc = PSDesc(2, 4)
 x = CTPS(0.0, 1, desc)
-# x keeps desc even if the task default changes later
+y = CTPS(0.0, 2, desc)
 
 # Construction
-x  = CTPS(0.0, 1)       # variable 1 expanded around 0.0
-c  = CTPS(3.14)          # scalar constant
-z  = CTPS(Float64)       # all-zero CTPS
+c = CTPS(3.14, desc)             # scalar constant
+z = CTPS(Float64, desc)           # all-zero CTPS
 
 # Allocating arithmetic (returns new CTPS)
-f + g;  f - g;  f * g;  -f;  f^n;  2.0*f
+f = (1 + x) * (1 + y)
+f + x;  f - y;  f * x;  -f;  f^2;  2.0*f
 
 # Math functions
-exp(f); log(f); sqrt(f); pow(f, n)
-sin(f); cos(f); tan(f); asin(f); acos(f)
-sinh(f); cosh(f)
+exp(x); log(1 + x); sqrt(1 + x); pow(1 + x, 3)
+sin(x); cos(x); tan(x); asin(x/2); acos(x/2)
+sinh(x); cosh(x)
 
 # Coefficient access
 cst(f)                           # constant term
@@ -79,20 +83,24 @@ element(f, [1, 0])               # coefficient of x¹ y⁰
 findindex(f, [1, 0])             # integer index of that monomial
 
 # In-place arithmetic (zero allocation)
-mul!(out, a, b);  add!(out, a, b);  sub!(out, a, b)
-scale!(out, a, s);  scaleadd!(out, s1, a, s2, b)
+out = CTPS(Float64, desc)
+mul!(out, x, y);  add!(out, x, y);  sub!(out, x, y)
+scale!(out, x, 2.0);  scaleadd!(out, 2.0, x, -1.0, y)
 
 # In-place math
-sin!(out, f);  cos!(out, f);  exp!(out, f)
-log!(out, f);  sqrt!(out, f);  pow!(out, f, n)
-sinh!(out, f); cosh!(out, f)
+sin!(out, x);  cos!(out, x);  exp!(out, x)
+log!(out, 1 + x);  sqrt!(out, 1 + x);  pow!(out, 1 + x, 3)
+sinh!(out, x); cosh!(out, x)
 
 # Workspace pool
 ws = PSWorkspace(desc, 16)
-t  = borrow!(ws)
-# ... use t ...
-release!(ws, t)
+out = borrow!(ws)
+mul!(out, x, y)
+@assert element(out, [1, 1]) == 1.0
+release!(ws, out)
 
 # @tpsa macro — compiles expression into zero-alloc in-place code
-@tpsa ws  nx = cos(θ)*x + sin(θ)*(y + x^2 - z^2)
+θ = 0.2
+@tpsa ws out = cos(θ)*x + sin(θ)*(y + x^2)
+@assert element(out, [1, 0]) ≈ cos(θ)
 ```

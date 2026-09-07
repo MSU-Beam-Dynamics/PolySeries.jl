@@ -22,8 +22,8 @@ degree, then lexicographically within each degree.
 
 ### What can you do with it?
 
-- **Automatic differentiation to arbitrary order** — partial derivatives of any
-  order appear directly as (rescaled) coefficients.
+- **Automatic differentiation through order 63** — partial derivatives through
+  the chosen descriptor order appear directly as rescaled coefficients.
 - **Nonlinear map propagation** — push a truncated series through a sequence of
   operations exactly (no finite-difference error).
 - **Computing Jacobians, Hessians, and higher-order tensors** without writing
@@ -135,11 +135,13 @@ f + a,  a + f,  f - a,  a - f,  a*f,  f*a   (a::Real)
 
 | Function | Description |
 |---------|-------------|
-| `cst(f)` | Constant term (`f.c[1]`) |
-| `element(f, exps)` | Coefficient for monomial with exponent vector `exps` |
-| `findindex(f, exps)` | Integer index of the monomial (use with `f.c[idx]`) |
+| `cst(f)` | Safely read the constant coefficient |
+| `element(f, exps)` | Safely read the coefficient for exponent vector `exps` |
+| `findindex(f, exps)` | Return the internal storage index of a monomial |
 
 `exps` is a `Vector{Int}` of length `nv`; entry `i` is the power of variable $x_i$.
+The raw `f.c` buffer is lazily initialized, so inactive degree blocks must be
+read through `cst` or `element` rather than indexed directly.
 
 To iterate over all active monomials, use `PolySeries.getindexmap(desc.polymap, i)` which
 returns a view `[degree, e₁, e₂, …, eₙ]` for coefficient index `i`.
@@ -199,9 +201,7 @@ written; reads outside active blocks never occur.
 
 ## Enzyme / AD interoperability
 
-PolySeries.jl is compatible with [Enzyme.jl](https://github.com/EnzymeAD/Enzyme.jl)
-(and by extension with Zygote and other source-transformation AD tools that can
-differentiate through Julia's heap allocations).
+PolySeries.jl is compatible with [Enzyme.jl](https://github.com/EnzymeAD/Enzyme.jl).
 
 ### What this enables
 

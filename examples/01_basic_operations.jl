@@ -17,78 +17,55 @@ z = CTPS(0.0, 3)  # variable z
 c = CTPS(5.0)     # constant value 5.0
 
 println("Created variables:")
-println("  x: linear coefficient = ", x.c[2])
-println("  y: linear coefficient = ", y.c[3])
-println("  z: linear coefficient = ", z.c[4])
-println("  c: constant value = ", c.c[1])
+println("  x: linear coefficient = ", element(x, [1, 0, 0]))
+println("  y: linear coefficient = ", element(y, [0, 1, 0]))
+println("  z: linear coefficient = ", element(z, [0, 0, 1]))
+println("  c: constant value = ", cst(c))
 println()
 
 # Addition examples
 println("--- Addition ---")
 sum1 = x + y
 println("x + y:")
-println("  Constant: ", sum1.c[1])
-println("  x coeff:  ", sum1.c[2])
-println("  y coeff:  ", sum1.c[3])
+println("  Constant: ", cst(sum1))
+println("  x coeff:  ", element(sum1, [1, 0, 0]))
+println("  y coeff:  ", element(sum1, [0, 1, 0]))
 println()
 
 sum2 = c + x + 2*y + 3*z
 println("5 + x + 2y + 3z:")
-println("  Constant: ", sum2.c[1])
-println("  x coeff:  ", sum2.c[2])
-println("  y coeff:  ", sum2.c[3])
-println("  z coeff:  ", sum2.c[4])
+println("  Constant: ", cst(sum2))
+println("  x coeff:  ", element(sum2, [1, 0, 0]))
+println("  y coeff:  ", element(sum2, [0, 1, 0]))
+println("  z coeff:  ", element(sum2, [0, 0, 1]))
 println()
 
 # Multiplication examples
 println("--- Multiplication ---")
 prod1 = x * y
 println("x * y:")
-println("  Constant: ", prod1.c[1])
-
-# Find the xy term (degree 2, exponents [0, 1, 1, 0])
-desc = prod1.desc
-for i in 1:desc.N
-    exp_vec = PolySeries.getindexmap(desc.polymap, i)
-    if exp_vec[1] == 2 && exp_vec[2] == 1 && exp_vec[3] == 1  # xy term
-        println("  xy coeff: ", prod1.c[i])
-    end
-end
+println("  Constant: ", cst(prod1))
+println("  xy coeff: ", element(prod1, [1, 1, 0]))
 println()
 
 # More complex multiplication
 prod2 = (1 + x) * (1 + y)
 println("(1 + x) * (1 + y) = 1 + x + y + xy:")
-println("  Constant: ", prod2.c[1], " (expected 1)")
-println("  x coeff:  ", prod2.c[2], " (expected 1)")
-println("  y coeff:  ", prod2.c[3], " (expected 1)")
-for i in 1:desc.N
-    exp_vec = PolySeries.getindexmap(desc.polymap, i)
-    if exp_vec[1] == 2 && exp_vec[2] == 1 && exp_vec[3] == 1  # xy term
-        println("  xy coeff: ", prod2.c[i], " (expected 1)")
-    end
-end
+println("  Constant: ", cst(prod2), " (expected 1)")
+println("  x coeff:  ", element(prod2, [1, 0, 0]), " (expected 1)")
+println("  y coeff:  ", element(prod2, [0, 1, 0]), " (expected 1)")
+println("  xy coeff: ", element(prod2, [1, 1, 0]), " (expected 1)")
 println()
 
 # Polynomial expansion
 println("--- Polynomial Expansion ---")
 poly = (1 + x + y)^2
 println("(1 + x + y)^2 = 1 + 2x + 2y + x^2 + 2xy + y^2:")
-println("  Constant: ", poly.c[1])
-println("  x coeff:  ", poly.c[2])
-println("  y coeff:  ", poly.c[3])
-
-for i in 1:desc.N
-    exp_vec = PolySeries.getindexmap(desc.polymap, i)
-    if exp_vec[1] == 2
-        if exp_vec[2] == 2  # x^2
-            println("  x² coeff: ", poly.c[i])
-        elseif exp_vec[2] == 1 && exp_vec[3] == 1  # xy
-            println("  xy coeff: ", poly.c[i])
-        elseif exp_vec[3] == 2  # y^2
-            println("  y² coeff: ", poly.c[i])
-        end
-    end
-end
+println("  Constant: ", cst(poly))
+println("  x coeff:  ", element(poly, [1, 0, 0]))
+println("  y coeff:  ", element(poly, [0, 1, 0]))
+println("  x² coeff: ", element(poly, [2, 0, 0]))
+println("  xy coeff: ", element(poly, [1, 1, 0]))
+println("  y² coeff: ", element(poly, [0, 2, 0]))
 
 println("\n✓ Basic operations completed successfully!")

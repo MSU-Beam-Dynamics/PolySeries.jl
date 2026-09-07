@@ -1,6 +1,7 @@
 # PolySeries.jl Examples
 
-This directory contains practical examples demonstrating how to use the TPSA package.
+This directory contains self-contained scripts demonstrating how to use
+PolySeries.jl. Each script imports the standard libraries it needs.
 
 ## Example Files
 
@@ -23,7 +24,7 @@ Mathematical functions with TPSA:
 ### 03_plugin_values.jl
 Evaluating TPSA at specific points:
 - Plugging in numerical values
-- Manual evaluation using coefficients
+- Evaluating a series with its call syntax
 - Extracting specific coefficients
 - Partial substitution
 - Using TPSA results for numerical computation
@@ -55,16 +56,16 @@ Combining TPSA with [Enzyme.jl](https://github.com/EnzymeAD/Enzyme.jl) for neste
 - Two levels of differentiation: TPSA (phase-space) + Enzyme (parameter sensitivity)
 - Multi-output Jacobians
 - Finite-difference verification
-- Notes on compatible (allocating) vs incompatible (in-place/pool) operations
+- Notes on differentiating allocating TPSA operations
 - Extracting higher-order tensors
 - Symplecticity checks
 - Applications in beam dynamics and nonlinear systems
 
 ## Running Examples
 
-Run any example directly:
+From the package checkout, run any example directly:
 ```julia
-julia examples/01_basic_operations.jl
+julia --project=. examples/01_basic_operations.jl
 ```
 
 Or include within a Julia session:
@@ -75,16 +76,8 @@ include("examples/02_math_functions.jl")
 
 ## Prerequisites
 
-Make sure TPSA is loaded:
-```julia
-using PolySeries
-```
-
-Some examples may require additional packages:
-```julia
-using LinearAlgebra  # For matrix operations (example 06)
-using Printf         # For formatted output
-```
+Examples 01–06 need only PolySeries.jl and Julia's standard libraries. Example
+07 also needs Enzyme.jl, which is included in the package test environment.
 
 ## Learning Path
 

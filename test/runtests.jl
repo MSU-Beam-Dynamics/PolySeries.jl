@@ -26,6 +26,10 @@ using PolySeries
         include("mathfunc_tests.jl")
     end
 
+    @testset "Documentation Examples" begin
+        include("documentation_examples_tests.jl")
+    end
+
     @testset "Math Aliasing" begin
         include("math_alias_tests.jl")
     end

@@ -8,7 +8,7 @@ A step-by-step introduction to the key features of PolySeries.jl.
 
 Register a **task-local default descriptor** to choose the number of variables and maximum polynomial order for new objects. Each `CTPS` retains its construction descriptor: changing or clearing the default does not change existing polynomials. Operations between different descriptors throw `DimensionMismatch` before writing coefficients.
 
-```julia
+```@example tutorial
 using PolySeries
 
 set_descriptor!(4, 6)   # 4 variables, maximum order 6
@@ -20,7 +20,7 @@ println("Coefficients per series: ", desc.N)   # → 210
 
 ## 2. Creating TPSA Objects
 
-```julia
+```@example tutorial
 # Independent variables (expansion point = 0.0, index = 1..nv)
 x1 = CTPS(0.0, 1)
 x2 = CTPS(0.0, 2)
@@ -44,7 +44,7 @@ Its coefficient vector satisfies `c[1] = a` and `c[i+1] = 1`.
 
 Standard Julia operators work naturally:
 
-```julia
+```@example tutorial
 f = x1^2 + 2*x1*x2 + x2^2    # (x1 + x2)²
 g = (1 + x1)*(1 + x2)         # 1 + x1 + x2 + x1*x2
 h = 3*x1 - x2/2               # mixed scalar/CTPS
@@ -59,7 +59,7 @@ All operations return a new `CTPS`; the inputs are not modified.
 
 Transcendental functions expand automatically in Taylor series around the constant term:
 
-```julia
+```@example tutorial
 set_descriptor!(2, 8)
 x = CTPS(0.0, 1)
 y = CTPS(0.0, 2)
@@ -78,10 +78,12 @@ sh    = sinh(x) + cosh(x)   # should equal exp(x)
 
 ## 5. Accessing Coefficients
 
-Coefficients are stored in `ctps.c` indexed by degree-lexicographic order.  
-Use `findindex` or `element` to look up a specific monomial by its exponent vector:
+Coefficients are indexed in degree-lexicographic order. Use `element` to read a
+coefficient safely and `findindex` when you need its storage index. The raw
+`ctps.c` vector is an internal, lazily initialized buffer: entries in inactive
+degree blocks need not contain numerical zeros and must not be read directly.
 
-```julia
+```@example tutorial
 set_descriptor!(3, 4)
 x = CTPS(0.0, 1);  y = CTPS(0.0, 2);  z = CTPS(0.0, 3)
 
@@ -90,26 +92,25 @@ f = (x + y + z)^2   # = x²+y²+z²+2xy+2xz+2yz
 # Exponent vectors have length nv; entries are per-variable powers
 idx_x2  = findindex(f, [2, 0, 0])   # x²
 idx_xy  = findindex(f, [1, 1, 0])   # xy
-idx_xyz = findindex(f, [0, 0, 0])   # constant term
+idx_c   = findindex(f, [0, 0, 0])   # constant term storage index
 
-println(f.c[idx_x2],  " (expected 1.0)")
-println(f.c[idx_xy],  " (expected 2.0)")
-println(f.c[idx_xyz], " (expected 0.0)")
-
-# Shorthand
-println(element(f, [2, 0, 0]))   # same as f.c[idx_x2]
-println(cst(f))                  # constant term (index 1)
+println(element(f, [2, 0, 0]), " (expected 1.0)")
+println(element(f, [1, 1, 0]), " (expected 2.0)")
+println(element(f, [0, 0, 0]), " (expected 0.0)")
+println(cst(f), " (expected 0.0)")
+println("Storage indices: x²=", idx_x2, ", xy=", idx_xy, ", constant=", idx_c)
 ```
 
 To iterate over all non-zero terms, use the `PolyMap`:
 
-```julia
+```@example tutorial
 desc = f.desc
 for i in 1:desc.N
-    v = f.c[i]
+    row = PolySeries.getindexmap(desc.polymap, i)
+    exponents = Int.(row[2:end])
+    v = element(f, exponents)
     iszero(v) && continue
-    exps = PolySeries.getindexmap(desc.polymap, i)   # returns view [degree, e1, e2, e3]
-    println("degree=", exps[1], " exponents=", exps[2:end], " coeff=", v)
+    println("degree=", row[1], " exponents=", exponents, " coeff=", v)
 end
 ```
 
@@ -121,7 +122,7 @@ Because the coefficients *are* the Taylor coefficients, derivatives come for fre
 
 $$\frac{\partial^{|\alpha|} f}{\partial x^\alpha}\bigg|_0 = \alpha!\; c_\alpha$$
 
-```julia
+```@example tutorial
 set_descriptor!(2, 4)
 x = CTPS(0.0, 1);  y = CTPS(0.0, 2)
 
@@ -129,10 +130,8 @@ f = x^3 + 2*x^2*y + x*y^2 + y^3
 
 # ∂f/∂x at 0:  coefficient of x¹ times 1! = 3!*0 + ... (only pure x^3 contributes nothing linear)
 # Linear terms are at degree 1
-idx_x = findindex(f, [1, 0])   # x¹ coefficient = ∂f/∂x|₀
-idx_y = findindex(f, [0, 1])   # y¹ coefficient = ∂f/∂y|₀
-println("∂f/∂x|0 = ", f.c[idx_x])   # 0 (no linear x term)
-println("∂f/∂y|0 = ", f.c[idx_y])   # 0
+println("∂f/∂x|0 = ", element(f, [1, 0]))   # 0 (no linear x term)
+println("∂f/∂y|0 = ", element(f, [0, 1]))   # 0
 
 # Build the Jacobian of a 4D map (linear part only)
 set_descriptor!(4, 3)
@@ -157,7 +156,7 @@ For performance-critical loops (e.g. long-term tracking), allocating new `CTPS` 
 
 ### In-place arithmetic
 
-```julia
+```@example tutorial
 set_descriptor!(4, 10)
 desc = get_descriptor()
 
@@ -175,7 +174,7 @@ scaleadd!(out, cos(0.5), a, sin(0.5), b)   # out = cos(θ)*a + sin(θ)*b (fused)
 
 `PSWorkspace` pre-allocates a pool of CTPS slots.  `borrow!` hands out a zeroed slot; `release!` returns it.
 
-```julia
+```@example tutorial
 ws  = PSWorkspace(desc, 16)   # pool of 16 Float64 CTPS objects
 
 t1 = borrow!(ws)
@@ -194,9 +193,9 @@ release!(ws, t2)
 
 All major transcendental functions have `!` variants that write into a pre-allocated output:
 
-```julia
+```@example tutorial
 sin!(out, a);   cos!(out, a)
-exp!(out, a);   log!(out, a);   sqrt!(out, a)
+exp!(out, a);   log!(out, 1 + a);   sqrt!(out, 1 + a)
 sinh!(out, a);  cosh!(out, a)
 pow!(out, a, 3)   # out = a^3
 ```
@@ -207,7 +206,7 @@ pow!(out, a, 3)   # out = a^3
 
 For complex expressions, writing the in-place chain manually is tedious.  The `@tpsa` macro compiles an arithmetic expression into optimal zero-allocation code automatically:
 
-```julia
+```@example tutorial
 set_descriptor!(4, 6)
 desc = get_descriptor()
 ws   = PSWorkspace(desc, 20)
@@ -234,7 +233,7 @@ nx1 = CTPS(0.0, 1)   # pre-allocated output
 
 Descriptors may be shared. Each task must initialize its own default or pass a descriptor explicitly. Workspaces must not be shared by concurrent tasks:
 
-```julia
+```@example tutorial
 using Base.Threads
 
 results = Vector{Float64}(undef, nthreads())

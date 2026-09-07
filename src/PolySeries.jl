@@ -8,6 +8,12 @@
 # Modified Date: 03-01-2026
 
 
+"""
+    PolySeries
+
+Multivariate truncated power series arithmetic with sparse active-degree
+tracking, in-place kernels, composition, and optional Enzyme integration.
+"""
 module PolySeries
 using StaticArrays
 using EnzymeCore: within_autodiff
@@ -23,5 +29,6 @@ export sin!, cos!, exp!, log!, sqrt!, sinh!, cosh!, asin!, acos!
 export pow!
 include("macro.jl")
 export @tpsa
+include("docstrings.jl")
 
 end
