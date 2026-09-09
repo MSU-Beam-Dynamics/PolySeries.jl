@@ -47,7 +47,7 @@ end
         @test cst(held) == 3.0
         @test element(held, [1, 0]) == 1.0
         @test cst(out) == 7.0
-        @test_throws ErrorException log!(out, CTPS(0.0))
+        @test_throws DomainError log!(out, CTPS(0.0))
         @test pool.sp == capacity - 1
     finally
         PolySeries._pool_release!(idx, held, desc)

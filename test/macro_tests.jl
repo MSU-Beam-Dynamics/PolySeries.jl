@@ -100,7 +100,7 @@ macro_rotation!(ws, out, x, y, z, θ) =
     @tpsa workspace() out = x*x + y*y
     @test calls[] == 1
     @test ws.sp == 8
-    @test_throws ErrorException @tpsa ws out = (x*x)*log(x)
+    @test_throws DomainError @tpsa ws out = (x*x)*log(x)
     @test ws.sp == 8
     wrong = CTPS(0.0, 1, PSDesc(1, 4))
     @test_throws DimensionMismatch @tpsa ws out = x*x + wrong

@@ -5,8 +5,22 @@
     PSDesc(nv::Int, order::Int)
 
 Return the cached descriptor for polynomials in `nv` variables through total
-degree `order`. Supported orders are 0–63. A polynomial retains the descriptor
-with which it was constructed.
+degree `order`. `nv` ranges over 1–127 and `order` over 0–63. A polynomial
+retains the descriptor with which it was constructed.
+
+The multiplication tables grow like `binomial(2nv + order, order) / 2` entries,
+so high orders are practical only for a few variables. Descriptors whose tables
+would exceed `PolySeries.MAX_DESCRIPTOR_BYTES[]` (default 2 GiB) raise
+`ArgumentError` before any allocation; raise that limit deliberately when the
+memory is available.
+
+# Errors
+`ArgumentError` for arguments outside the supported ranges or above the size
+limit. Across the package, `DomainError` reports an expansion center where a
+function is singular (division by a series with zero constant term, `log` at
+zero, real `sqrt` of a negative constant, real `asin`/`acos` at `|a| ≥ 1`),
+`ArgumentError` reports invalid arguments, and `DimensionMismatch` reports
+operands with different descriptors or a substitution map of the wrong length.
 """ PSDesc
 
 @doc """
@@ -90,11 +104,13 @@ Set `p` to the zero polynomial by clearing its active coefficient blocks.
 """ zero!
 
 @doc """
-    mul!(out::CTPS, a::CTPS, b::CTPS)
+    mul!(out::CTPS, a::CTPS, b::CTPS) -> out
 
-Write the truncated product `a*b` to `out`.
-The output may alias either or both inputs; aliasing uses temporary storage.
-""" mul!
+Write the truncated product `a*b` to `out` and return `out`. This is a method
+of `LinearAlgebra.mul!`, so `using PolySeries, LinearAlgebra` does not create
+an export conflict. The output may alias either or both inputs; aliasing uses
+temporary storage.
+""" mul!(::CTPS, ::CTPS, ::CTPS)
 
 @doc """
     compose!(out, f, substitutions)

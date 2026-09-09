@@ -240,13 +240,59 @@ Descriptors may be shared. Each task must initialize its own default or pass a d
 using Base.Threads
 
 results = Vector{Float64}(undef, nthreads())
-@threads for tid in 1:nthreads()
-    set_descriptor!(4, 6)           # task-local initialization
-    desc = get_descriptor()
-    ws   = PSWorkspace(desc, 16)
-    # ... compute ...
+@threads for i in 1:nthreads()
+    desc = PSDesc(2, 4)             # descriptors are cached and safe to share
+    ws   = PSWorkspace(desc, 8)     # one workspace per task
+    x    = CTPS(0.1 * i, 1, desc)
+    out  = borrow!(ws)
+    exp!(out, x)
+    results[i] = cst(out)
+    release!(ws, out)
 end
+results ≈ exp.(0.1 .* (1:nthreads()))
 ```
+
+Internal temporaries used by the math functions come from per-thread pools that
+are created on first use, so no setup is needed for them.
+
+## 10. Composition
+
+`compose(f, g)` substitutes the polynomials `g[1], …, g[nv]` for the variables
+of `f`, i.e. `h(x) = f(g₁(x), …, gₙ(x))`, truncated at the descriptor order:
+
+```@example tutorial
+desc = PSDesc(2, 3)
+x = CTPS(0.0, 1, desc); y = CTPS(0.0, 2, desc)
+f = x^2 + y
+g = [x + y, x - y]               # (x, y) ↦ (x + y, x − y)
+h = compose(f, g)                # (x + y)² + (x − y) = x² + 2xy + y² + x − y
+element(h, [1, 1]), element(h, [0, 1])
+```
+
+`compose!(out, f, g, ws)` writes into existing storage and reuses a
+`CompositionWorkspace` between calls; `out` must not share storage with `f` or
+any `g[i]`:
+
+```@example tutorial
+cws = CompositionWorkspace(desc)
+out = CTPS(Float64, desc)
+compose!(out, f, g, cws)
+element(out, [2, 0])
+```
+
+## 11. Complex Coefficients
+
+Any floating-point or complex floating-point type can be used as the
+coefficient type; the type is fixed by the constructor arguments:
+
+```@example tutorial
+z = CTPS(0.0 + 0.0im, 1, PSDesc(1, 4))
+w = exp(im * z)                  # coefficients are ComplexF64
+element(w, [2])                  # (i z)²/2! = -1/2
+```
+
+`log`, `sqrt`, `asin` and `acos` follow Julia's scalar branch conventions at
+the expansion center; see the API reference for the details near branch cuts.
 
 ---
 

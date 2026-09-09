@@ -276,7 +276,7 @@ end
     @test (@allocated compose!(out, f, g)) < sizeof(Float64)*desc.N^2 ÷ 4
     @test_throws DimensionMismatch compose!(out, f, g, CompositionWorkspace(PSDesc(1, 4)))
     @test out.c == f.c
-    @test_throws ErrorException compose!(out, f, g[1:3], ws)
+    @test_throws DimensionMismatch compose!(out, f, g[1:3], ws)
     @test out.c == f.c
     # Order zero has only the root, with no multiplication buffers needed.
     d0 = PSDesc(1, 0)

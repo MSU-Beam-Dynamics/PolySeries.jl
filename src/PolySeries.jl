@@ -17,7 +17,7 @@ tracking, in-place kernels, composition, and optional Enzyme integration.
 module PolySeries
 using StaticArrays
 using EnzymeCore: within_autodiff
-include("mathfunc.jl")
+import LinearAlgebra: mul!   # PolySeries.mul! extends LinearAlgebra.mul!
 include("polymap.jl")
 include("ctps.jl")
 export CTPS, PSDesc, pow, cst, element, findindex # assign!, reassign!

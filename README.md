@@ -9,11 +9,11 @@ PolySeries.jl computes multivariate Taylor expansions through a chosen total deg
 
 ## Highlights
 
-- **Automatic differentiation through order 63** — all partial derivatives up to the chosen order emerge as coefficients of the series.
+- **Automatic differentiation to high order** — all partial derivatives up to the chosen order (at most 63) emerge as coefficients of the series. Multiplication tables grow like `binomial(2nv + order, order)/2`, so very high orders are practical for a few variables; `PSDesc` refuses descriptors above a configurable memory limit instead of exhausting memory.
 - **[Enzyme.jl compatible](examples/07_enzyme_ad.jl)** — differentiate through TPSA computations to get sensitivities of Taylor coefficients w.r.t. scalar design parameters.
 - **Sparse degree-mask representation** — only active degree blocks are touched; constant-only inputs have near-zero overhead.
 - **Lazy-zero allocation** — temporaries use `undef` memory; the `degree_mask` invariant ensures garbage outside the active range is never read.
-- **Zero-allocation in-place API** — `mul!`, `add!`, `scaleadd!`, `pow!`, etc., plus `PSWorkspace` for pool-based temporary management.
+- **Zero-allocation in-place API** — `mul!` (a method of `LinearAlgebra.mul!`), `add!`, `scaleadd!`, `pow!`, etc., plus `PSWorkspace` for pool-based temporary management.
 - **`@tpsa` macro** — compiles supported arithmetic expressions into in-place calls, borrowing workspace slots automatically.
 - **Thread-safe** — task-local defaults and separate workspaces documented and tested.
 
@@ -21,7 +21,8 @@ PolySeries.jl computes multivariate Taylor expansions through a chosen total deg
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/MSU-Beam-Dynamics/PolySeries.jl")
+Pkg.add("PolySeries")   # once registered; until then:
+# Pkg.add(url="https://github.com/MSU-Beam-Dynamics/PolySeries.jl")
 ```
 
 ## Minimal example

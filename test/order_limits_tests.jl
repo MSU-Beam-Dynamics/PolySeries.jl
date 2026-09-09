@@ -11,6 +11,21 @@ using Test, PolySeries
         @test get_descriptor() === original
     end
     @test PSDesc(127, 1).N == 128
+    # Index-table footprint guard: passes the Int32 coefficient check but would
+    # need ~22 GB of multiplication schedules.
+    @test_throws ArgumentError PSDesc(4, 63)
+    @test_throws ArgumentError set_descriptor!(4, 63)
+    @test get_descriptor() === original
+    @test PolySeries.descriptor_footprint_bytes(4, 63, 766_480, [binomial(3 + d, d) for d in 0:63]) > 20 * 1024^3
+    # The limit is adjustable; use a descriptor no other test caches.
+    saved = PolySeries.MAX_DESCRIPTOR_BYTES[]
+    try
+        PolySeries.MAX_DESCRIPTOR_BYTES[] = 1
+        @test_throws ArgumentError PSDesc(11, 2)
+    finally
+        PolySeries.MAX_DESCRIPTOR_BYTES[] = saved
+    end
+    @test PSDesc(11, 2).N == 78
     constant = CTPS(2.0, PSDesc(1, 0))
     @test cst(exp(constant)) ≈ exp(2.0)
     desc = PSDesc(1, 63)

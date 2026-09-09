@@ -55,6 +55,27 @@ end
 # Each thread owns one pool per descriptor; acquire/release are lock-free.
 const CTPS_POOL_SIZE = 32
 
+# Upper bound on the index-table footprint of one descriptor. The multiplication
+# schedules hold about binomial(2nv + order, order)/2 Int32 entries, so very high
+# orders are practical only for a few variables (PSDesc(4, 63) would need ~22 GB).
+# Raise deliberately when the memory is really available:
+#     PolySeries.MAX_DESCRIPTOR_BYTES[] = 8 * 1024^3
+const MAX_DESCRIPTOR_BYTES = Ref{Int}(2 * 1024^3)
+
+# Bytes needed by the index tables and one thread's coefficient pool for a
+# descriptor with per-degree sizes `Nd`. Float64 arithmetic: the schedule count
+# can exceed typemax(Int) long before the limit check rejects it.
+function descriptor_footprint_bytes(nv::Int, order::Int, N::Int, Nd::Vector{Int})
+    sched_entries = 0.0
+    for di in 0:order, dj in 0:min(di, order - di)
+        sched_entries += Float64(Nd[di + 1]) * Float64(Nd[dj + 1])
+    end
+    return 4 * sched_entries +                    # MulSchedule2D k_local (Int32)
+           Float64(N) * (nv + 1) +                # PolyMap exponent table (UInt8)
+           Float64(N) * 40 +                      # exp_to_idx Dict and CompPlan
+           Float64(N) * 8 * CTPS_POOL_SIZE        # one thread's Float64 pool
+end
+
 mutable struct DescPool
     bufs  :: Vector{Vector{Float64}}         # raw coefficient buffers
     refs  :: Vector{Base.RefValue{UInt64}}   # pre-allocated degree_mask refs
@@ -210,7 +231,15 @@ function PSDesc(nv::Int, order::Int)
         for d in 1:order
             off[d + 1] = off[d] + Nd[d]
         end
-        
+
+        # Reject descriptors whose index tables would not fit before touching
+        # any large allocation; the Int32 check above only bounds N.
+        footprint = descriptor_footprint_bytes(nv, order, N, Nd)
+        footprint <= MAX_DESCRIPTOR_BYTES[] || throw(ArgumentError(
+            "PSDesc($nv, $order) needs about $(Base.format_bytes(round(Int, footprint))) of index " *
+            "tables, above the $(Base.format_bytes(MAX_DESCRIPTOR_BYTES[])) limit in " *
+            "PolySeries.MAX_DESCRIPTOR_BYTES[]. Reduce the order or raise the limit deliberately."))
+
         # Create polymap and reverse lookup
         polymap = PolyMap(nv, order)
         
@@ -509,38 +538,21 @@ end
 end
 
 
-function CTPS(T::Type, nv::Int, order::Int)
-    desc = set_descriptor!(nv, order)
-    c = zeros(T, desc.N)
-    return CTPS{T}(c, desc, Ref(UInt64(0)))
-end
+"""
+    CTPS(T::Type, nv::Int, order::Int)
+    CTPS(a::Number, nv::Int, order::Int)
+    CTPS(a::Number, n::Int, nv::Int, order::Int)
 
-# Constructor: constant CTPS
-function CTPS(a::T, nv::Int, order::Int) where T
-    desc = set_descriptor!(nv, order)
-    c = zeros(T, desc.N)
-    c[1] = a
-    mask = _prunable_zero(a) ? UInt64(0) : UInt64(1)  # Degree 0 has non-zero
-    return CTPS{T}(c, desc, Ref(mask))
-end
-
-# Constructor: variable CTPS (a + δxₙ)
-function CTPS(a::T, n::Int, nv::Int, order::Int) where T
-    if n <= nv && n > 0
-        desc = set_descriptor!(nv, order)
-        c = zeros(T, desc.N)
-        c[n + 1] = one(T)  # linear term for variable n
-        c[1] = a           # constant term
-        # Degree 0 and degree 1 have non-zeros
-        mask = UInt64(0x3)  # bits 0 and 1 set
-        if _prunable_zero(a)
-            mask = UInt64(0x2)  # only bit 1 set
-        end
-        return CTPS{T}(c, desc, Ref(mask))
-    else
-        error("Variable index out of range in CTPS")
-    end
-end
+Legacy convenience constructors. Each one first calls
+[`set_descriptor!`](@ref)`(nv, order)`, replacing this task's default
+descriptor as a side effect, and then builds the zero polynomial, the constant
+`a`, or the variable `a + δxₙ` exactly like the explicit-descriptor forms.
+Prefer `CTPS(…, desc::PSDesc)` in new code. Invalid variable indices and
+`order == 0` variables raise `ArgumentError`.
+"""
+CTPS(T::Type, nv::Int, order::Int) = CTPS(T, set_descriptor!(nv, order))
+CTPS(a::T, nv::Int, order::Int) where {T<:Number} = CTPS(a, set_descriptor!(nv, order))
+CTPS(a::T, n::Int, nv::Int, order::Int) where {T<:Number} = CTPS(a, n, set_descriptor!(nv, order))
 
 # -----------------------------------------------------------------------
 # RANGE-LIMITED HELPERS
@@ -813,8 +825,8 @@ end
 function (ctps::CTPS{T})(args::T...) where T
     desc = ctps.desc::PSDesc   # hoisted: avoids repeated Union{PSDesc,Nothing} access
     nv   = desc.nv
-    length(args) == nv ||
-        error("Number of arguments does not match the number of variables in the CTPS")
+    length(args) == nv || throw(ArgumentError(
+        "expected $nv evaluation arguments (one per variable), got $(length(args))"))
 
     source_mask = ctps.degree_mask[]
     mask = within_autodiff() ? typemax(UInt64) >> (63 - desc.order) : source_mask
@@ -898,6 +910,14 @@ _is_negative(_) = false          # complex / other: always print with +
 _needs_parens(::Real)    = false
 _needs_parens(_)         = true
 
+# Colors cycled per degree order when the IO supports color.
+# Degree 0 (constant) is printed in normal/default color; degrees 1+ alternate.
+const _DEGREE_COLORS = (:normal, :cyan, :green, :yellow, :magenta, :light_blue, :light_red)
+
+@inline function _cprint(io::IO, use_color::Bool, color::Symbol, args...)
+    use_color ? printstyled(io, args...; color) : print(io, args...)
+end
+
 """
     show(io, ctps)
 
@@ -913,14 +933,6 @@ CTPS{Float64}: nv=2, order=3
   + 1.5 x₁² x₂
 ```
 """
-# Colors cycled per degree order when the IO supports color.
-# Degree 0 (constant) is printed in normal/default color; degrees 1+ alternate.
-const _DEGREE_COLORS = (:normal, :cyan, :green, :yellow, :magenta, :light_blue, :light_red)
-
-@inline function _cprint(io::IO, use_color::Bool, color::Symbol, args...)
-    use_color ? printstyled(io, args...; color) : print(io, args...)
-end
-
 function Base.show(io::IO, ctps::CTPS{T}) where T
     desc       = ctps.desc
     mask       = ctps.degree_mask[]
@@ -1223,14 +1235,16 @@ mutable struct PSWorkspace
     avail    :: Vector{Int}             # stack of available indices
     sp       :: Int                     # stack pointer (sp==length(bufs) → all free)
     id_to_idx :: Dict{UInt64, Int}      # objectid(ctps.c) → slot index, O(1) release
+    inuse    :: BitVector               # slot currently borrowed (rejects double release)
 end
 
 function PSWorkspace(desc::PSDesc, n::Int = 32)
+    n >= 1 || throw(ArgumentError("PSWorkspace needs at least one slot"))
     bufs  = [CTPS{Float64}(zeros(Float64, desc.N), desc, Ref(UInt64(0)))
              for _ in 1:n]
     avail = collect(1:n)
     id_to_idx = Dict{UInt64, Int}(objectid(bufs[i].c) => i for i in 1:n)
-    return PSWorkspace(desc, bufs, avail, n, id_to_idx)
+    return PSWorkspace(desc, bufs, avail, n, id_to_idx, falses(n))
 end
 
 """    borrow!(ws::PSWorkspace) -> CTPS{Float64}
@@ -1241,6 +1255,7 @@ Must be paired with `release!(ws, ctps)` when done."""
     ws.sp == 0 && error("PSWorkspace exhausted — increase n at construction")
     idx  = ws.avail[ws.sp]
     ws.sp -= 1
+    @inbounds ws.inuse[idx] = true
     return ws.bufs[idx]
 end
 
@@ -1252,6 +1267,8 @@ Zeros only the active degree range before returning — O(active_range)."""
     ctps.desc === ws.desc || throw(DimensionMismatch("CTPS and workspace descriptors must match"))
     idx = get(ws.id_to_idx, objectid(ctps.c), 0)
     idx != 0 || throw(ArgumentError("CTPS was not borrowed from this workspace"))
+    @inbounds ws.inuse[idx] || throw(ArgumentError("CTPS slot was already released to this workspace"))
+    @inbounds ws.inuse[idx] = false
     dm = ctps.degree_mask[]
     if dm != 0
         (s, e) = active_range_bounds(ws.desc, dm)
@@ -1399,7 +1416,7 @@ function mul!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
                      (63 - leading_zeros(mask2)) % Int, order)
         if dk_min > dk_max
             result.degree_mask[] = UInt64(0)
-            return nothing
+            return result
         end
         out_s = desc.off[dk_min + 1]
         out_e = desc.off[dk_max + 1] + desc.Nd[dk_max + 1] - 1
@@ -1479,7 +1496,7 @@ function mul!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
     end
 
     result.degree_mask[] = compose_degree_mask(mask1, mask2, order)
-    return nothing
+    return result
 end
 
 # ── CTPS Composition ─────────────────────────────────────────────────────────
@@ -1515,10 +1532,15 @@ end
 
 @inline function _check_composition(result, f, g)
     _check_descriptors(result, f)
-    length(g) == f.desc.nv ||
-        error("compose!: expected $(f.desc.nv) substitution polynomials, got $(length(g))")
+    length(g) == f.desc.nv || throw(DimensionMismatch(
+        "compose!: expected $(f.desc.nv) substitution polynomials, got $(length(g))"))
+    # The traversal clears `result` before reading `f` and the images of `g`,
+    # so sharing storage would silently produce zeros.
+    result.c === f.c && throw(ArgumentError("compose!: result must not alias f"))
     for substitution in g
         _check_descriptors(f, substitution)
+        result.c === substitution.c &&
+            throw(ArgumentError("compose!: result must not alias a member of g"))
     end
     return nothing
 end
@@ -1586,20 +1608,13 @@ end
 # after the forward traversal. Do not apply numeric coefficient pruning here,
 # since a zero-valued coefficient can have a nonzero derivative.
 function _compose_retained!(result::CTPS{T}, f::CTPS{T}, g::AbstractVector{<:CTPS{T}}) where T
-    _check_descriptors(result, f)
+    _check_composition(result, f, g)
     desc  = f.desc
     nv    = desc.nv
     N     = desc.N
     source_mask = f.degree_mask[]
     fm    = within_autodiff() ? typemax(UInt64) >> (63 - desc.order) : source_mask
     plan  = desc.comp_plan
-
-    length(g) == nv ||
-        error("compose!: expected $nv substitution polynomials, got $(length(g))")
-
-    for substitution in g
-        _check_descriptors(f, substitution)
-    end
 
     _zero_active!(result)
     fm == 0 && return result     # f is the zero polynomial
@@ -1769,11 +1784,9 @@ end
 
 # /
 function inv(ctps::CTPS{T}) where T
-    if cst(ctps) == zero(T)
-        error("Divide by zero in CTPS")
-    end
+    c0 = cst(ctps)
+    iszero(c0) && throw(DomainError(c0, "inv: the constant term of the series must be nonzero"))
     desc  = ctps.desc
-    c0    = cst(ctps)
     inv_c0 = one(T) / c0
 
     temp = CTPS(ctps)
@@ -1797,9 +1810,7 @@ end
 
 function /(ctps1::CTPS{T}, ctps2::CTPS{T}) where T
     _check_descriptors(ctps1, ctps2)
-    if cst(ctps2) == zero(T)
-        error("Divide by zero in CTPS")
-    end
+    iszero(cst(ctps2)) && throw(DomainError(cst(ctps2), "division: the constant term of the divisor must be nonzero"))
     return ctps1 * inv(ctps2)
 end
 
@@ -1809,18 +1820,14 @@ end
 # specificity ambiguity that made `ctps / 2.0` recurse.
 function /(ctps::CTPS{T}, a::Number) where T
     b = T(a)
-    if b == zero(T)
-        error("Divide by zero in CTPS")
-    end
+    iszero(b) && throw(DomainError(b, "division by zero"))
     ctps_new = CTPS(ctps)       # range-limited copy
     scale!(ctps_new, one(T)/b)  # range-limited scale
     return ctps_new
 end
 
 function /(a::Number, ctps::CTPS{T}) where T
-    if cst(ctps) == zero(T)
-        error("Divide by zero in CTPS")
-    end
+    iszero(cst(ctps)) && throw(DomainError(cst(ctps), "division: the constant term of the divisor must be nonzero"))
     return T(a) * inv(ctps)
 end
 
@@ -1901,7 +1908,7 @@ end
 # logarithm (zero loop allocations)
 function log(ctps::CTPS{T}) where T
     a0 = cst(ctps)
-    a0 == zero(T) && error("Log of zero in CTPS")
+    iszero(a0) && throw(DomainError(a0, "log: the constant term of the series must be nonzero"))
     desc   = ctps.desc
     inv_a0 = one(T) / a0
 
@@ -1931,9 +1938,7 @@ end
 function log!(result::CTPS{T}, ctps::CTPS{T}) where T
     _check_descriptors(result, ctps)
     a0 = cst(ctps)
-    if a0 == zero(T)
-        error("Log of zero in CTPS")
-    end
+    iszero(a0) && throw(DomainError(a0, "log: the constant term of the series must be nonzero"))
     # Validate the scalar logarithm before borrowing scratch buffers or
     # modifying result, so domain errors cannot leak internal pool capacity.
     log_a0 = Base.log(a0)
@@ -1974,7 +1979,7 @@ end
 function sqrt(ctps::CTPS{T}) where T
     a0_val = cst(ctps)
     iszero(a0_val) && throw(DomainError(a0_val, "Square root requires a nonzero expansion center"))
-    T <: Real && a0_val < zero(T) && error("Square root of negative number in CTPS")
+    T <: Real && a0_val < zero(T) && throw(DomainError(a0_val, "sqrt: negative real expansion center; use complex coefficients"))
     a0   = Base.sqrt(a0_val)
     desc = ctps.desc
 
@@ -2008,9 +2013,7 @@ function sqrt!(result::CTPS{T}, ctps::CTPS{T}) where T
     _check_descriptors(result, ctps)
     a0_val = cst(ctps)
     iszero(a0_val) && throw(DomainError(a0_val, "Square root requires a nonzero expansion center"))
-    if T <: Real && a0_val < zero(T)
-        error("Square root of negative number in CTPS")
-    end
+    T <: Real && a0_val < zero(T) && throw(DomainError(a0_val, "sqrt: negative real expansion center; use complex coefficients"))
     a0   = Base.sqrt(a0_val)
     desc = ctps.desc
 
@@ -2118,7 +2121,7 @@ function pow!(result::CTPS{T}, ctps::CTPS{T}, b::Int) where T
         return result
     end
     b == 1 && (copy!(result, ctps); return result)
-    b < 0  && error("pow!(result, ctps, b) with b < 0 not supported; use inv(pow(ctps,-b))")
+    b < 0  && throw(ArgumentError("pow!(result, ctps, b) requires b >= 0; use inv(pow(ctps, -b)) for negative exponents"))
     # The square/cube shortcuts multiply directly into result. Preserve the
     # base when output shares its coefficient buffer, including another wrapper.
     if (b == 2 || b == 3) && result.c === ctps.c
@@ -2387,7 +2390,7 @@ end
 # arcsin
 function asin(ctps::CTPS{T}) where T
     a0 = cst(ctps)
-    T <: Real && abs(a0) >= one(T) && error("asin domain error: |constant term| must be < 1")
+    T <: Real && abs(a0) >= one(T) && throw(DomainError(a0, "asin/acos: |constant term| must be < 1 for real coefficients"))
     asin_a0 = Base.asin(a0)
     desc    = ctps.desc
     order   = desc.order
@@ -2415,7 +2418,7 @@ end
 function asin!(result::CTPS{T}, ctps::CTPS{T}) where T
     _check_descriptors(result, ctps)
     a0 = cst(ctps)
-    T <: Real && abs(a0) >= one(T) && error("asin domain error: |constant term| must be < 1")
+    T <: Real && abs(a0) >= one(T) && throw(DomainError(a0, "asin/acos: |constant term| must be < 1 for real coefficients"))
     asin_a0 = Base.asin(a0)
     desc    = ctps.desc
     order   = desc.order

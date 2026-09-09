@@ -55,10 +55,26 @@ scale!
 scaleadd!
 copy!
 zero!
-mul!
+mul!(::CTPS, ::CTPS, ::CTPS)
 pow
 pow!
 ```
+
+`mul!` is a method of `LinearAlgebra.mul!`, so it can be used alongside
+`LinearAlgebra` without qualification. In-place scalar arguments (`add!`,
+`scale!`, `scaleadd!`) must have the coefficient type `T` exactly; the
+allocating operators accept any `Number` and convert.
+
+## Errors
+
+`DomainError` signals an expansion center where the function is singular:
+division by a series with zero constant term, `log` at zero, real `sqrt` of a
+negative constant, and real `asin`/`acos` with `|constant| ≥ 1`.
+`ArgumentError` signals invalid arguments (exponent vectors, variable indices,
+negative in-place powers, descriptor sizes beyond the limit, releasing a
+workspace slot twice, a composition result that aliases its inputs).
+`DimensionMismatch` signals operands built on different descriptors or a
+substitution map with the wrong number of polynomials.
 
 ## Mathematical functions
 

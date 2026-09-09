@@ -73,7 +73,10 @@ include("examples/02_math_functions.jl")
 ## Prerequisites
 
 Examples 01–06 need only PolySeries.jl and Julia's standard libraries. Example
-07 also needs Enzyme.jl, which is included in the package test environment.
+07 also needs Enzyme.jl, which is a test dependency rather than a package
+dependency: either add it to the environment you run the example from
+(`julia --project=. -e 'using Pkg; Pkg.add("Enzyme")'`) or rely on
+`Pkg.test()`, which runs every example in an environment that includes it.
 
 ## Learning Path
 
@@ -84,7 +87,4 @@ Recommended order for learning:
 4. Practice evaluation with `03_plugin_values.jl`
 5. Explore calculus in `05_derivatives_integration.jl`
 6. Apply to real problems with `06_matrix_construction.jl`
-
-## Development Scripts
-
-Old debugging and development scripts have been moved to `../dev_scripts/` for reference.
+7. Differentiate through a TPSA computation with Enzyme in `07_enzyme_ad.jl`

@@ -2,9 +2,11 @@
 
 PolySeries.jl implements **Truncated Power Series Algebra** — a technique for computing
 multivariate Taylor expansions of arbitrary functions to user-specified order.
-It overloads Julia's standard arithmetic operators and mathematical functions so
-that compatible scalar code computes truncated Taylor series when given
-`CTPS` inputs. Coefficients retain the rounding behavior of their numeric type.
+It overloads Julia's arithmetic operators and the mathematical functions listed
+below for `CTPS` objects, so code written against that operator set computes
+truncated Taylor series when given `CTPS` inputs (a `CTPS` is not a `Number`,
+so generic code that relies on `zero(x)`, comparisons or `convert` is not
+supported). Coefficients retain the rounding behavior of their numeric type.
 
 ## Overview
 
@@ -39,7 +41,8 @@ See the **[Tutorial](tutorial.md)** for a step-by-step walkthrough.
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/MSU-Beam-Dynamics/PolySeries.jl")
+Pkg.add("PolySeries")   # once registered; until then:
+# Pkg.add(url="https://github.com/MSU-Beam-Dynamics/PolySeries.jl")
 ```
 
 ## Basic workflow
@@ -95,9 +98,14 @@ temporary storage. A polynomial retains its construction descriptor.
 All operators create a new `CTPS`:
 
 ```text
-f + g,  f - g,  f * g,  -f,  f^n   (n::Int)
-f + a,  a + f,  f - a,  a - f,  a*f,  f*a   (a::Real)
+f + g,  f - g,  f * g,  f / g,  -f,  f^n   (n::Int)
+f + a,  a + f,  f - a,  a - f,  a*f,  f*a,  f/a,  a/f   (a::Number, converted to the coefficient type)
 ```
+
+Division and `inv` require a nonzero constant term in the divisor
+(`DomainError` otherwise). Coefficient types are floating point (`Float64`,
+`Float32`, `BigFloat`, and their `Complex` forms); mixing two coefficient types
+in one expression is not supported.
 
 ### Mathematical functions
 
@@ -120,10 +128,10 @@ f + a,  a + f,  f - a,  a - f,  a*f,  f*a   (a::Real)
 | Function | Effect |
 |---------|--------|
 | `add!(out, a, b)` | `out = a + b` |
-| `add!(out, a, s)` | `out = a + s` (scalar `s`) |
+| `add!(out, a, s)` | `out = a + s` (scalar `s` of the coefficient type `T`) |
 | `sub!(out, a, b)` | `out = a - b` |
 | `mul!(out, a, b)` | `out = a * b` |
-| `scale!(out, a, s)` | `out = s * a` |
+| `scale!(out, a, s)` | `out = s * a` (scalar `s` of the coefficient type `T`) |
 | `scaleadd!(out, s1, a, s2, b)` | `out = s1*a + s2*b` (fused) |
 | `addto!(a, b)` | `a += b` |
 | `subfrom!(a, b)` | `a -= b` |
@@ -144,8 +152,9 @@ exceed the descriptor order; malformed vectors raise `ArgumentError`.
 The raw `f.c` buffer is lazily initialized, so inactive degree blocks must be
 read through `cst` or `element` rather than indexed directly.
 
-To iterate over all active monomials, use `PolySeries.getindexmap(desc.polymap, i)` which
-returns a view `[degree, e₁, e₂, …, eₙ]` for coefficient index `i`.
+To iterate over all monomials, `decomposite(i - 1, desc.nv)` returns the
+exponent vector `[degree, e₁, e₂, …, eₙ]` for storage index `i` (`1 ≤ i ≤ desc.N`);
+pass its tail to `element` to read the coefficient safely.
 
 ## Zero-allocation patterns
 

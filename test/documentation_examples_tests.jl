@@ -2,7 +2,10 @@ using Test
 
 function run_example_script(path::AbstractString, project::AbstractString)
     output = IOBuffer()
-    command = `$(Base.julia_cmd()) --startup-file=no --compiled-modules=existing --project=$project $path`
+    # `--compiled-modules=existing` (Julia ≥ 1.11) avoids recompiling the package
+    # in every child process; older releases simply skip the flag.
+    flags = VERSION >= v"1.11" ? ["--compiled-modules=existing"] : String[]
+    command = `$(Base.julia_cmd()) --startup-file=no $flags --project=$project $path`
     process = run(pipeline(ignorestatus(command), stdout=output, stderr=output))
     return success(process), String(take!(output))
 end
