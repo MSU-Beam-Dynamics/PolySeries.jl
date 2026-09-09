@@ -63,6 +63,8 @@ function order_reference(f, n)
     f === log && return n == 0 ? big(0)//1 : (-big(1))^(n+1)//n
     f === sqrt && return n == 0 ? big(1)//1 :
         (-big(1))^(n-1) * binomial(big(2n), n) // (big(4)^n * (2n-1))
+    # asin(x) = Σ_{k≥0} (2k)! / (4^k (k!)² (2k+1)) x^{2k+1}
+    f === asin && return isodd(n) ? binomial(big(n - 1), (n - 1) ÷ 2) // (big(4)^((n - 1) ÷ 2) * n) : big(0)//1
     error("Missing reference")
 end
 
@@ -72,17 +74,21 @@ end
             desc = PSDesc(1, order)
             tolerance = T === BigFloat ? BigFloat("1e-65") : 1e-12
             for (f, f!) in ((exp, exp!), (sin, sin!), (cos, cos!),
-                            (sinh, sinh!), (cosh, cosh!), (log, log!), (sqrt, sqrt!))
+                            (sinh, sinh!), (cosh, cosh!), (log, log!), (sqrt, sqrt!),
+                            (asin, asin!))
                 @testset "$T order=$order $f" begin
                     center = f in (log, sqrt) ? one(T) : zero(T)
+                    # The asin coefficient recurrence is O(order²) scalar work;
+                    # allow it a little more Float64 rounding at order 63.
+                    tol = (f === asin && T === Float64) ? 1e-10 : tolerance
                     x = CTPS(center, 1, desc)
                     y = f(x)
                     out = CTPS(T, desc)
                     f!(out, x)
                     for n in 0:order
                         expected = T(order_reference(f, n))
-                        @test element(y, [n]) ≈ expected rtol=tolerance atol=0
-                        @test element(out, [n]) ≈ expected rtol=tolerance atol=0
+                        @test element(y, [n]) ≈ expected rtol=tol atol=0
+                        @test element(out, [n]) ≈ expected rtol=tol atol=0
                     end
                 end
             end

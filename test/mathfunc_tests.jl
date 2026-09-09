@@ -311,3 +311,52 @@ const TEST_HS         = [0.001 * i for i in 1:5]
     end
 
 end
+
+# Mixed monomials (x¹y¹, x²y³, …) are never produced by a single-variable
+# slice. Analytic identities give exact expectations for every coefficient of
+# a genuinely multivariate argument without any hand computation.
+@testset "Multi-variable analytic identities" begin
+    for (nv, order) in ((2, 6), (3, 4))
+        desc = PSDesc(nv, order)
+        vars = [CTPS(0.0, v, desc) for v in 1:nv]
+        s = foldl(+, vars)                       # x + y (+ z)
+        rest = foldl(+, vars[2:end])             # y (+ z)
+        one_p = CTPS(1.0, desc)
+        allc(p) = [element(p, [Int(desc.polymap.map[i, v]) for v in 2:nv + 1]) for i in 1:desc.N]
+        same(p, q; atol=1e-12) = isapprox(allc(p), allc(q); atol=atol)
+
+        @testset "nv=$nv order=$order" begin
+            @test same(exp(s), foldl(*, exp.(vars)))
+            @test same(exp(s) * exp(-s), one_p)
+            @test same(sin(s), sin(vars[1]) * cos(rest) + cos(vars[1]) * sin(rest))
+            @test same(cos(s), cos(vars[1]) * cos(rest) - sin(vars[1]) * sin(rest))
+            @test same(sin(s)^2 + cos(s)^2, one_p)
+            @test same(cosh(s)^2 - sinh(s)^2, one_p)
+            @test same(sinh(s), sinh(vars[1]) * cosh(rest) + cosh(vars[1]) * sinh(rest))
+            @test same(tan(s) * cos(s), sin(s); atol=1e-11)
+            @test same(log(foldl(*, (1.0 .+ vars))), foldl(+, log.(1.0 .+ vars)); atol=1e-11)
+            @test same(exp(log(1.0 + s)), 1.0 + s; atol=1e-11)
+            @test same(sqrt(1.0 + s)^2, 1.0 + s)
+            @test same(sqrt(1.0 + s) * sqrt(1.0 + s), 1.0 + s)
+            @test same(inv(1.0 + s) * (1.0 + s), one_p)
+            @test same((1.0 + s) / (1.0 + s), one_p)
+            # Inverse trigonometric series through composition with the forward one.
+            u = 0.5 * s
+            @test same(sin(asin(u)), u; atol=1e-11)
+            @test same(cos(acos(u)), u; atol=1e-11)
+            w = 0.3 + 0.4 * s                    # nonzero expansion centre
+            @test same(sin(asin(w)), w; atol=1e-11)
+            @test same(cos(acos(w)), w; atol=1e-11)
+            # Exact mixed coefficients of exp(x+y+…): 1/(e₁! e₂! …).
+            if nv == 2
+                @test element(exp(s), [2, 3]) ≈ 1 / (factorial(2) * factorial(3))
+                @test element(exp(s), [1, 1]) ≈ 1.0
+                @test element(sin(s), [1, 2]) ≈ -1 / 2      # -(x+y)³/6 → coefficient of x y²
+            else
+                @test element(exp(s), [1, 1, 2]) ≈ 1 / factorial(2)
+                @test element(exp(s), [1, 1, 1]) ≈ 1.0
+                @test element(cos(s), [2, 1, 1]) ≈ 1 / 2    # (x+y+z)⁴/24 → 12/24
+            end
+        end
+    end
+end

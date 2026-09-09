@@ -14,6 +14,10 @@ using PolySeries
         include("multiplication_tests.jl")
     end
 
+    @testset "Multiplication Reference" begin
+        include("mul_reference_tests.jl")
+    end
+
     @testset "Type Stability" begin
         include("type_stability_tests.jl")
     end
@@ -48,6 +52,10 @@ using PolySeries
 
     @testset "Release edge cases" begin
         include("release_edge_tests.jl")
+    end
+
+    @testset "Error Paths" begin
+        include("error_path_tests.jl")
     end
 
     @testset "Arithmetic Accuracy" begin

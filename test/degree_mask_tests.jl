@@ -118,3 +118,59 @@ end
     end
 end
 
+
+# Exponent-convolution reference for products of the masked fixtures above;
+# independent of mul! (only findindex is used, to rank the product monomial).
+function masked_product_reference(desc, probe, av, bv)
+    pm = desc.polymap.map
+    ref = zeros(desc.N)
+    for i in 1:desc.N, j in 1:desc.N
+        (iszero(av[i]) || iszero(bv[j])) && continue
+        Int(pm[i, 1]) + Int(pm[j, 1]) > desc.order && continue
+        k = findindex(probe, [Int(pm[i, v]) + Int(pm[j, v]) for v in 2:desc.nv + 1])
+        ref[k] += av[i] * bv[j]
+    end
+    return ref
+end
+
+@testset "Degree masks: multiplication and powers with poisoned inactive storage" begin
+    # Same exhaustive mask sweep as the elementwise kernels, now for mul! and
+    # pow!: every (ma, mb) pair, every aliasing pattern, poisoned gaps. The
+    # fixture values are small integers, so products and sums are exact.
+    for nv in (1, 2), poison in (NaN, 123456.0)
+        desc = set_descriptor!(nv, 3)
+        probe = CTPS(Float64)
+        for ma in UInt64(0):UInt64(15)
+            a, av = masked_fixture(desc, ma, 2.0; poison)
+
+            power = copy(av)
+            for n in 2:5
+                power = masked_product_reference(desc, probe, power, av)
+                @test masked_coefficients(a^n) == power
+                r, _ = masked_fixture(desc, ~ma & 15, 7.0; poison)
+                pow!(r, a, n)
+                @test masked_coefficients(r) == power
+                aa, _ = masked_fixture(desc, ma, 2.0; poison)
+                pow!(aa, aa, n)
+                @test masked_coefficients(aa) == power
+            end
+
+            aa, _ = masked_fixture(desc, ma, 2.0; poison)
+            mul!(aa, aa, aa)
+            @test masked_coefficients(aa) == masked_product_reference(desc, probe, av, av)
+
+            for mb in UInt64(0):UInt64(15)
+                b, bv = masked_fixture(desc, mb, -3.0; poison)
+                expected = masked_product_reference(desc, probe, av, bv)
+                @test masked_coefficients(a * b) == expected
+                for alias in (:neither, :left, :right)
+                    aa, _ = masked_fixture(desc, ma, 2.0; poison)
+                    bb, _ = masked_fixture(desc, mb, -3.0; poison)
+                    r = alias == :left ? aa : alias == :right ? bb : first(masked_fixture(desc, ~ma & 15, 7.0; poison))
+                    mul!(r, aa, bb)
+                    @test masked_coefficients(r) == expected
+                end
+            end
+        end
+    end
+end
