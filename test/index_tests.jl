@@ -99,3 +99,36 @@ end
         end
     end
 end
+
+@testset "Invalid exponent vectors" begin
+    p = CTPS(7.0, PSDesc(2, 3))
+
+    invalid = (
+        [-1, 1],       # negative variable exponent
+        [0, 1, 0],     # degree prefix disagrees with variable exponents
+        [-1, 0, 0],    # negative degree prefix
+        [1, -1, 2],    # negative exponent in prefixed form
+        [4, 0],        # total degree exceeds the descriptor order
+        [4, 4, 0],     # prefixed degree exceeds the descriptor order
+        Int[],         # wrong short length
+        [0],
+        [0, 0, 0, 0],
+    )
+
+    for exponents in invalid
+        @test_throws ArgumentError findindex(p, exponents)
+        @test_throws ArgumentError element(p, exponents)
+    end
+end
+
+@testset "Validated exponent indexing preserves valid mappings" begin
+    for nv in 1:4, order in 0:4
+        desc = PSDesc(nv, order)
+        p = CTPS(0.0, desc)
+        for i in 1:desc.N
+            prefixed = Int.(PolySeries.getindexmap(desc.polymap, i))
+            @test findindex(p, prefixed) == i
+            @test findindex(p, prefixed[2:end]) == i
+        end
+    end
+end

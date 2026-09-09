@@ -16,8 +16,8 @@ Learn the fundamentals:
 ### 02_math_functions.jl
 Mathematical functions with TPSA:
 - Exponential and logarithm (exp, log)
-- Trigonometric functions (sin, cos, tan)
-- Hyperbolic functions (sinh, cosh, tanh)
+- Trigonometric functions (sin, cos)
+- Hyperbolic functions (sinh, cosh)
 - Power functions (pow, sqrt)
 - Combined operations
 
@@ -40,10 +40,9 @@ Working with indices and monomials:
 ### 05_derivatives_integration.jl
 Calculus operations:
 - Computing partial derivatives
-- Numerical differentiation from coefficients
+- Polynomial differentiation from coefficients
 - Integration (antiderivatives)
 - Function composition
-- Chain rule applications
 
 ### 06_matrix_construction.jl
 Building matrices from TPSA results:
@@ -54,17 +53,14 @@ Building matrices from TPSA results:
 Combining TPSA with [Enzyme.jl](https://github.com/EnzymeAD/Enzyme.jl) for nested AD:
 - Differentiating Taylor map coefficients w.r.t. scalar design parameters
 - Two levels of differentiation: TPSA (phase-space) + Enzyme (parameter sensitivity)
-- Multi-output Jacobians
-- Finite-difference verification
+- Comparisons with analytic derivatives
 - Notes on differentiating allocating TPSA operations
-- Extracting higher-order tensors
-- Symplecticity checks
-- Applications in beam dynamics and nonlinear systems
+- Differentiating evaluation of a truncated polynomial
 
 ## Running Examples
 
 From the package checkout, run any example directly:
-```julia
+```sh
 julia --project=. examples/01_basic_operations.jl
 ```
 

@@ -3,8 +3,8 @@
 PolySeries.jl implements **Truncated Power Series Algebra** — a technique for computing
 multivariate Taylor expansions of arbitrary functions to user-specified order.
 It overloads Julia's standard arithmetic operators and mathematical functions so
-that code written for plain numbers automatically computes exact Taylor series
-when given `CTPS` inputs.
+that compatible scalar code computes truncated Taylor series when given
+`CTPS` inputs. Coefficients retain the rounding behavior of their numeric type.
 
 ## Overview
 
@@ -25,7 +25,7 @@ degree, then lexicographically within each degree.
 - **Automatic differentiation through order 63** — partial derivatives through
   the chosen descriptor order appear directly as rescaled coefficients.
 - **Nonlinear map propagation** — push a truncated series through a sequence of
-  operations exactly (no finite-difference error).
+  operations without finite-difference approximations.
 - **Computing Jacobians, Hessians, and higher-order tensors** without writing
   symbolic formulas.
 - **Beam dynamics / perturbation theory** — the original use case; every TPSA
@@ -39,7 +39,7 @@ See the **[Tutorial](tutorial.md)** for a step-by-step walkthrough.
 
 ```julia
 using Pkg
-Pkg.add("PolySeries")
+Pkg.add(url="https://github.com/MSU-Beam-Dynamics/PolySeries.jl")
 ```
 
 ## Basic workflow
@@ -67,11 +67,10 @@ println(element(f, [1,1,0]))   # ∂²f/(∂x ∂y)|₀
 
 ## Key types
 
-`CTPS{T}` is the only type end users construct directly.  It holds the coefficient
-vector `c::Vector{T}` (length `desc.N`) and tracks which degree blocks are active
-via a `degree_mask` bitmask.  Everything else (`PSDesc`, `PSWorkspace`) is
-either obtained from helper functions (`get_descriptor()`, `PSWorkspace(desc, n)`)
-or used only in the advanced zero-allocation API.
+`CTPS{T}` stores coefficients and an active-degree mask. Construct a
+`PSDesc(nv, order)` explicitly to specify its polynomial space, or use a
+task-local default. `PSWorkspace` and `CompositionWorkspace` provide reusable
+temporary storage. A polynomial retains its construction descriptor.
 
 ## Key functions
 
@@ -105,14 +104,14 @@ f + a,  a + f,  f - a,  a - f,  a*f,  f*a   (a::Real)
 | Allocating | In-place | Notes |
 |-----------|---------|-------|
 | `exp(f)` | `exp!(out, f)` | |
-| `log(f)` | `log!(out, f)` | requires `cst(f) > 0` |
-| `sqrt(f)` | `sqrt!(out, f)` | requires `cst(f) > 0` |
-| `pow(f, n)` | `pow!(out, f, n)` | integer `n` |
+| `log(f)` | `log!(out, f)` | positive real or nonzero complex constant |
+| `sqrt(f)` | `sqrt!(out, f)` | positive real or nonzero complex constant |
+| `pow(f, n)` | `pow!(out, f, n)` | integer `n`; in-place form requires `n ≥ 0` |
 | `sin(f)` | `sin!(out, f)` | |
 | `cos(f)` | `cos!(out, f)` | |
 | `tan(f)` | — | |
-| `asin(f)` | — | |
-| `acos(f)` | — | |
+| `asin(f)` | `asin!(out, f)` | real constant must have absolute value below 1; complex branch points ±1 are rejected |
+| `acos(f)` | `acos!(out, f)` | real constant must have absolute value below 1; complex branch points ±1 are rejected |
 | `sinh(f)` | `sinh!(out, f)` | |
 | `cosh(f)` | `cosh!(out, f)` | |
 
@@ -129,7 +128,7 @@ f + a,  a + f,  f - a,  a - f,  a*f,  f*a   (a::Real)
 | `addto!(a, b)` | `a += b` |
 | `subfrom!(a, b)` | `a -= b` |
 | `copy!(dest, src)` | Copy active range of `src` into `dest` |
-| `zero!(a)` | Zero all coefficients |
+| `zero!(a)` | Reset to the zero polynomial and clear its activity mask |
 
 ### Coefficient access
 
@@ -139,7 +138,9 @@ f + a,  a + f,  f - a,  a - f,  a*f,  f*a   (a::Real)
 | `element(f, exps)` | Safely read the coefficient for exponent vector `exps` |
 | `findindex(f, exps)` | Return the internal storage index of a monomial |
 
-`exps` is a `Vector{Int}` of length `nv`; entry `i` is the power of variable $x_i$.
+`exps` is a `Vector{Int}` with one nonnegative power per variable. A leading
+total degree is also accepted when it matches their sum. The degree must not
+exceed the descriptor order; malformed vectors raise `ArgumentError`.
 The raw `f.c` buffer is lazily initialized, so inactive degree blocks must be
 read through `cst` or `element` rather than indexed directly.
 
@@ -195,9 +196,10 @@ Choose the minimum order that captures the physics you care about.
 
 ### Allocation cost
 
-Under **lazy-zero** allocation, creating a temporary `CTPS` costs only a `malloc`
-(no `memset`). The `degree_mask` bitmask tracks which degree blocks have been
-written; reads outside active blocks never occur.
+Under lazy initialization, constructors initialize the coefficient blocks they
+activate rather than necessarily clearing the full buffer. Public accessors
+return zero for inactive blocks. Allocation costs depend on the constructor,
+coefficient type, and whether Enzyme is differentiating the call.
 
 ## Enzyme / AD interoperability
 
@@ -251,12 +253,22 @@ no user-side setup required.
 3. **Use the allocating forms** inside the differentiated function:
    `exp`, `sin`, `cos`, `log`, `sqrt`, `sinh`, `cosh`, `+`, `-`, `*`, `/`, `^`.
 
-4. **Avoid `!`-variants inside differentiated code.** The in-place functions
-   (`exp!`, `sin!`, `mul!`, etc.) write into workspace-pool slots, which
-   involves mutation that Enzyme cannot trace through.
+4. **Keep differentiable buffers local to the differentiated call.**
+   In-place operations are not categorically unsupported: tests cover
+   forward and reverse differentiation through aliased `exp!`, `sin!`,
+   `cos!`, and nonnegative `pow!` calls. Internal math temporaries use
+   independent allocations during AD. These checks do not establish support
+   for arbitrary mutation of a shared `PSWorkspace`.
+
+Prebuilt polynomials may have zero-valued coefficients with nonzero derivatives.
+During AD, arithmetic materializes sparse inputs through mask-aware coefficient
+reads so those derivatives are retained without reading inactive storage.
+This can increase memory and work compared with ordinary sparse arithmetic.
+When only the evaluation point varies, mark the polynomial as fixed:
+`Enzyme.gradient(Reverse, Enzyme.Const(f), x0)`.
 
 See `examples/07_enzyme_ad.jl` in the package directory for worked examples
-including multi-output Jacobians and finite-difference verification.
+including comparisons with analytic derivatives.
 
 ## Contents
 

@@ -52,6 +52,29 @@ end
 const ForwardCoefficients = Union{Enzyme.Duplicated{<:Vector}, Enzyme.DuplicatedNoNeed{<:Vector},
                                   Enzyme.BatchDuplicated{<:Vector}, Enzyme.BatchDuplicatedNoNeed{<:Vector}}
 const ReverseCoefficients = Union{Enzyme.Duplicated{<:Vector}, Enzyme.BatchDuplicated{<:Vector}}
+
+# A fixed polynomial can be evaluated at an active numerical point. Its
+# coefficient reads have no adjoints, but still need the primal mask check.
+function EnzymeRules.forward(config::EnzymeRules.FwdConfig,
+        func::Enzyme.Const{typeof(PolySeries._coefficient)},
+        ::Type{<:Enzyme.Const}, p::Enzyme.Const{<:Vector},
+        mask::Enzyme.Const{UInt64}, index::Enzyme.Const{Int}, degree::Enzyme.Const{Int})
+    return EnzymeRules.needs_primal(config) ? func.val(p.val, mask.val, index.val, degree.val) : nothing
+end
+
+function EnzymeRules.augmented_primal(config::EnzymeRules.RevConfig,
+        func::Enzyme.Const{typeof(PolySeries._coefficient)},
+        ::Type{<:Enzyme.Const}, p::Enzyme.Const{<:Vector},
+        mask::Enzyme.Const{UInt64}, index::Enzyme.Const{Int}, degree::Enzyme.Const{Int})
+    primal = EnzymeRules.needs_primal(config) ? func.val(p.val, mask.val, index.val, degree.val) : nothing
+    return EnzymeRules.AugmentedReturn(primal, nothing, nothing)
+end
+
+function EnzymeRules.reverse(::EnzymeRules.RevConfig,
+        ::Enzyme.Const{typeof(PolySeries._coefficient)}, ::Type{<:Enzyme.Const}, ::Nothing,
+        ::Enzyme.Const{<:Vector}, ::Enzyme.Const{UInt64}, ::Enzyme.Const{Int}, ::Enzyme.Const{Int})
+    return (nothing, nothing, nothing, nothing)
+end
 @inline _shadow(p, lane) = p.dval
 @inline _shadow(p::Union{Enzyme.BatchDuplicated, Enzyme.BatchDuplicatedNoNeed}, lane) = p.dval[lane]
 

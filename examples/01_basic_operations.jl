@@ -68,4 +68,11 @@ println("  x² coeff: ", element(poly, [2, 0, 0]))
 println("  xy coeff: ", element(poly, [1, 1, 0]))
 println("  y² coeff: ", element(poly, [0, 2, 0]))
 
+@assert cst(c) == 5.0
+@assert cst(sum1) == 0.0
+@assert cst(prod1) == 0.0
+@assert element(prod1, [1, 1, 0]) == 1.0
+@assert [element(prod2, e) for e in ([0,0,0], [1,0,0], [0,1,0], [1,1,0])] == ones(4)
+@assert [element(poly, e) for e in ([0,0,0], [1,0,0], [0,1,0], [2,0,0], [1,1,0], [0,2,0])] == [1,2,2,1,2,1]
+
 println("\n✓ Basic operations completed successfully!")

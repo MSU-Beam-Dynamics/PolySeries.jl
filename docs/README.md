@@ -6,12 +6,12 @@ Official package documentation for PolySeries.jl (Truncated Power Series Algebra
 
 | File | Description |
 |------|-------------|
-| [index.md](index.md) | Overview, quick-reference tables, performance notes |
-| [tutorial.md](tutorial.md) | Step-by-step walkthrough of all key features |
-| [api.md](api.md) | Complete type and function reference |
+| [index.md](src/index.md) | Overview, quick-reference tables, performance notes |
+| [tutorial.md](src/tutorial.md) | Executable tutorial examples |
+| [api.md](src/api.md) | Reference generated from public docstrings |
 
 ## Related directories
 
 - [`../examples/`](../examples/) — self-contained runnable Julia scripts
-- [`../test/`](../test/) — test suite (run with `julia --project=. test/runtests.jl`)
+- [`../test/`](../test/) — full test suite (from the package root, run `julia --project=. -e 'using Pkg; Pkg.test()'`)
 - [`../benchmarks/`](../benchmarks/) — performance measurement scripts

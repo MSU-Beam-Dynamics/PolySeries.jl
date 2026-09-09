@@ -26,16 +26,18 @@ degree storage and returns numerical zero when the constant block is inactive.
 @doc """
     element(p::CTPS, exponents::Vector{Int})
 
-Return the coefficient of the monomial described by `exponents`, one exponent
-per variable. This is the safe public coefficient accessor; inactive degree
-blocks return numerical zero.
+Return the coefficient of the monomial described by `exponents`. Pass one
+nonnegative exponent per variable, or prefix those exponents with their total
+degree. The total degree must not exceed the descriptor order. This is the safe
+public coefficient accessor; inactive degree blocks return numerical zero.
 """ element
 
 @doc """
     findindex(p::CTPS, exponents::Vector{Int}) -> Int
 
-Return the storage index for a monomial. Use [`element`](@ref) to read its
-coefficient because inactive entries in `p.c` may be uninitialized.
+Return the storage index for a monomial. `exponents` accepts the same validated
+formats as [`element`](@ref). Use `element` to read the coefficient because
+inactive entries in `p.c` may be uninitialized.
 """ findindex
 
 @doc """
@@ -91,6 +93,7 @@ Set `p` to the zero polynomial by clearing its active coefficient blocks.
     mul!(out::CTPS, a::CTPS, b::CTPS)
 
 Write the truncated product `a*b` to `out`.
+The output may alias either or both inputs; aliasing uses temporary storage.
 """ mul!
 
 @doc """
@@ -104,7 +107,8 @@ substitution. Pass a [`CompositionWorkspace`](@ref) to reuse scratch storage.
 @doc """
     pow(p::CTPS, exponent::Int)
 
-Return `p` raised to an integer power. Negative powers use the reciprocal.
+Return `p` raised to an integer power. Negative powers exponentiate the
+reciprocal, which requires a nonzero constant coefficient.
 """ pow
 
 @doc """
@@ -131,6 +135,8 @@ supported.
     sqrt!(out::CTPS, p::CTPS)
 
 Write the square-root series of `p` to `out`. Input/output aliasing is supported.
+The constant coefficient must be nonzero (positive for real coefficients);
+expansion about zero is unsupported and throws `DomainError`.
 """ sqrt!
 
 @doc """
@@ -149,12 +155,16 @@ Write the cosine series of `p` to `out`. Input/output aliasing is supported.
     asin!(out::CTPS, p::CTPS)
 
 Write the inverse-sine series of `p` to `out`. Input/output aliasing is supported.
+Complex centers at ±1 raise `DomainError`. On complex branch cuts, signed
+imaginary zero selects the continuation matching the scalar `asin` value.
 """ asin!
 
 @doc """
     acos!(out::CTPS, p::CTPS)
 
 Write the inverse-cosine series of `p` to `out`. Input/output aliasing is supported.
+Complex centers at ±1 raise `DomainError`. On complex branch cuts, signed
+imaginary zero selects the continuation matching the scalar `acos` value.
 """ acos!
 
 @doc """

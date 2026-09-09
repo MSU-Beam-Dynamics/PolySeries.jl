@@ -5,7 +5,7 @@
 
 **Truncated Power Series Algebra for Julia**
 
-PolySeries.jl computes multivariate Taylor expansions of arbitrary functions to high orders. It overloads all standard arithmetic operators and transcendental functions so that code written for ordinary `Float64` scalars also works for `CTPS` objects (struct of PolySeries) — producing exact Taylor series rather than single numbers.
+PolySeries.jl computes multivariate Taylor expansions through a chosen total degree. It overloads arithmetic operators and supported transcendental functions for `CTPS` objects, producing Taylor coefficients with the rounding behavior of the coefficient type.
 
 ## Highlights
 
@@ -14,14 +14,13 @@ PolySeries.jl computes multivariate Taylor expansions of arbitrary functions to 
 - **Sparse degree-mask representation** — only active degree blocks are touched; constant-only inputs have near-zero overhead.
 - **Lazy-zero allocation** — temporaries use `undef` memory; the `degree_mask` invariant ensures garbage outside the active range is never read.
 - **Zero-allocation in-place API** — `mul!`, `add!`, `scaleadd!`, `pow!`, etc., plus `PSWorkspace` for pool-based temporary management.
-- **`@tpsa` macro** — compiles an arithmetic expression into an optimal in-place call sequence, borrowing workspace slots automatically.
+- **`@tpsa` macro** — compiles supported arithmetic expressions into in-place calls, borrowing workspace slots automatically.
 - **Thread-safe** — task-local defaults and separate workspaces documented and tested.
 
 ## Installation
 
 ```julia
 using Pkg
-Pkg.add("PolySeries")          # once registered; until then:
 Pkg.add(url="https://github.com/MSU-Beam-Dynamics/PolySeries.jl")
 ```
 
@@ -94,13 +93,16 @@ sinh!(out, x); cosh!(out, x)
 
 # Workspace pool
 ws = PSWorkspace(desc, 16)
-out = borrow!(ws)
-mul!(out, x, y)
-@assert element(out, [1, 1]) == 1.0
-release!(ws, out)
+temporary = borrow!(ws)
+mul!(temporary, x, y)
+@assert element(temporary, [1, 1]) == 1.0
+release!(ws, temporary)
 
 # @tpsa macro — compiles expression into zero-alloc in-place code
 θ = 0.2
 @tpsa ws out = cos(θ)*x + sin(θ)*(y + x^2)
 @assert element(out, [1, 0]) ≈ cos(θ)
+@assert element(out, [0, 1]) ≈ sin(θ)
+@assert element(out, [2, 0]) ≈ sin(θ)
+@assert ws.sp == length(ws.bufs)
 ```

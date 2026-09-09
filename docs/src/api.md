@@ -34,10 +34,12 @@ element
 findindex
 ```
 
-Exponent vectors contain one exponent per variable. For example,
-`element(p, [2, 1])` reads the coefficient of ``x_1^2x_2``. An inactive degree
-block represents numerical zeros even though its backing memory need not be
-initialized.
+The usual form contains one nonnegative exponent per variable. For example,
+`element(p, [2, 1])` reads the coefficient of ``x_1^2x_2``. A leading total
+degree is also accepted when it equals the sum of the exponents. Invalid lengths,
+negative exponents, inconsistent prefixes, and degrees beyond the descriptor
+order raise `ArgumentError`. An inactive degree block represents numerical zeros
+even though its backing memory need not be initialized.
 
 ## Arithmetic
 
@@ -62,6 +64,15 @@ pow!
 
 The allocating forms are `exp`, `log`, `sqrt`, `sin`, `cos`, `tan`, `asin`,
 `acos`, `sinh`, and `cosh`. Their in-place counterparts are:
+
+`sqrt` and `sqrt!` require a nonzero constant coefficient (positive for real
+coefficients). Expansion about zero is unsupported and raises `DomainError`.
+
+`asin`/`acos` and their in-place forms reject complex branch points at `±1`.
+For other complex constants on a branch cut, the sign of the imaginary zero
+selects the local analytic continuation matching Julia's scalar function.
+Evaluating that continuation across the cut need not match the scalar function
+on its opposite side.
 
 ```@docs
 exp!

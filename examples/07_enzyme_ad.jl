@@ -42,7 +42,7 @@ grad = Enzyme.gradient(Reverse, exp_value, x0)[1]
 println("Example 1 passed ✓\n")
 
 
-# ─── Example 2: all seven supported math functions ────────────────────────────
+# ─── Example 2: seven common math functions ────────────────────────────
 
 set_descriptor!(1, 4)
 
@@ -134,7 +134,9 @@ exact = -sin(x0) * cos(0.5)
 println("Example 5 passed ✓\n")
 
 
-# ─── Example 6: d/dx of sin(x)cos(x) + exp(x) w.r.t. the expansion term
+# ─── Example 6: differentiate numerical evaluation of a truncated series
+# This differentiates the stored degree-10 polynomial at x=0.5, so agreement
+# with the original transcendental function is approximate (tolerance 1e-6).
 
 set_descriptor!(1, 10)
 
@@ -142,7 +144,8 @@ x = CTPS(0.0, 1)
 f = sin(x) * cos(x) + exp(x)
 
 x0 = 0.5
-g_lc  = Enzyme.gradient(Reverse, f, x0)[1]
+# Only the evaluation point varies here; the stored polynomial is fixed.
+g_lc  = Enzyme.gradient(Reverse, Enzyme.Const(f), x0)[1]
 exact = exp(x0) - sin(x0)^2 + cos(x0)^2
 @printf("∂/∂x[sin(x)cos(x) + exp(x)] at x=%.1f:  Enzyme = %.8f   exact = %.8f   ok = %s\n",
         x0, g_lc, exact, abs(g_lc - exact) < 1e-6)
@@ -150,7 +153,7 @@ exact = exp(x0) - sin(x0)^2 + cos(x0)^2
 println("Example 6 passed ✓\n")
 
 # ---- Example 7: ∂/∂w₀ of coefficient of sinusoidal expansion  ----
-# Coefficient of x³ in sin(w₀x₀)]:  -w₀³x₀³cos(w₀x₀)/6
+# Coefficient of δx³ in sin(w₀(x₀ + δx)): -w₀³cos(w₀x₀)/6
 # ∂/∂w₀ = w₀³x₀sin(w₀x₀)/6 - w₀²cos(w₀x₀)/2
 
 set_descriptor!(1, 4)
@@ -190,8 +193,8 @@ Key rules for PolySeries + Enzyme
    PolySeries keeps initialized zeros active during AD; ordinary evaluation
    still uses the sparse degree masks to avoid reading uninitialized storage.
 
-5. Do NOT differentiate through in-place/pool-based variants:
-     exp!(out, f),  sin!(out, f),  mul!(out, a, b), …
-   These mutate shared workspace slots that Enzyme cannot trace through.
-   Use the allocating forms (exp, sin, *, etc.) inside differentiated code.
+5. Keep differentiable buffers local to the differentiated call.
+   Tests cover forward and reverse AD through aliased exp!, sin!, cos!,
+   and nonnegative pow! calls. Internal temporaries are independently
+   allocated during AD; arbitrary shared-workspace mutation is not covered.
 """)

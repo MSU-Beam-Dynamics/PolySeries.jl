@@ -98,6 +98,9 @@ println(element(f, [2, 0, 0]), " (expected 1.0)")
 println(element(f, [1, 1, 0]), " (expected 2.0)")
 println(element(f, [0, 0, 0]), " (expected 0.0)")
 println(cst(f), " (expected 0.0)")
+@assert element(f, [2, 0, 0]) == 1.0
+@assert element(f, [1, 1, 0]) == 2.0
+@assert element(f, [0, 0, 0]) == cst(f) == 0.0
 println("Storage indices: x²=", idx_x2, ", xy=", idx_xy, ", constant=", idx_c)
 ```
 
@@ -128,7 +131,7 @@ x = CTPS(0.0, 1);  y = CTPS(0.0, 2)
 
 f = x^3 + 2*x^2*y + x*y^2 + y^3
 
-# ∂f/∂x at 0:  coefficient of x¹ times 1! = 3!*0 + ... (only pure x^3 contributes nothing linear)
+# First derivatives at zero equal the linear coefficients, which vanish here.
 # Linear terms are at degree 1
 println("∂f/∂x|0 = ", element(f, [1, 0]))   # 0 (no linear x term)
 println("∂f/∂y|0 = ", element(f, [0, 1]))   # 0
@@ -204,7 +207,7 @@ pow!(out, a, 3)   # out = a^3
 
 ## 8. The `@tpsa` Macro
 
-For complex expressions, writing the in-place chain manually is tedious.  The `@tpsa` macro compiles an arithmetic expression into optimal zero-allocation code automatically:
+For complex expressions, writing the in-place chain manually is tedious. The `@tpsa` macro compiles supported arithmetic expressions into in-place calls using workspace temporaries:
 
 ```@example tutorial
 set_descriptor!(4, 6)

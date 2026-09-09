@@ -12,11 +12,6 @@ set_descriptor!(2, 4)
 x = CTPS(0.0, 1)
 y = CTPS(0.0, 2)
 
-# Plug in a numerical value for testing
-# For example, let's evaluate at x = 0.1, y = 0.2
-x_val = 0.1
-y_val = 0.2
-
 println("--- Exponential and Logarithm ---")
 # exp(x)
 exp_x = PolySeries.exp(x)
@@ -80,5 +75,18 @@ println("exp(x) * sin(y) at x=0, y=0:")
 println("  Constant term: ", cst(result), " (expected 0.0)")
 println("  x coefficient: ", element(result, [1, 0]), " (expected 0.0)")
 println("  y coefficient: ", element(result, [0, 1]), " (expected 1.0)")
+
+for (series, constant, linear) in (
+    (exp_x, 1.0, 1.0), (log_expr, 0.0, 1.0),
+    (sin_x, 0.0, 1.0), (cos_x, 1.0, 0.0),
+    (sinh_x, 0.0, 1.0), (cosh_x, 1.0, 0.0),
+    (sqrt_expr, 1.0, 0.5),
+)
+    @assert cst(series) == constant
+    @assert element(series, [1, 0]) == linear
+end
+@assert cst(result) == element(result, [1, 0]) == 0.0
+@assert element(result, [0, 1]) == 1.0
+@assert element(result, [1, 2]) == 0.0
 
 println("\n✓ Mathematical functions completed successfully!")

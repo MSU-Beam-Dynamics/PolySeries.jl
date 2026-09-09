@@ -64,6 +64,64 @@ end
     @test out.c[3] ≈ 4.0  # y coefficient
 end
 
+@testset "In-place multiplication aliasing" begin
+    regression_desc = PSDesc(2, 3)
+    regression = CTPS(0.5, 1, regression_desc)
+    mul!(regression, regression, regression)
+    @test cst(regression) ≈ 0.25
+    @test element(regression, [1, 0]) ≈ 1.0
+
+    desc = PSDesc(2, 4)
+    x = CTPS(0.0, 1, desc)
+    y = CTPS(0.0, 2, desc)
+
+    a = 1.0 + 2x + x^3
+    b = -0.5 + y + 3x^2
+
+    left = CTPS(a)
+    expected_left = a * b
+    mul!(left, left, b)
+    @test all(element(left, Int.(PolySeries.getindexmap(desc.polymap, i)[2:end])) ≈
+              element(expected_left, Int.(PolySeries.getindexmap(desc.polymap, i)[2:end]))
+              for i in 1:desc.N)
+
+    right = CTPS(b)
+    expected_right = a * b
+    mul!(right, a, right)
+    @test all(element(right, Int.(PolySeries.getindexmap(desc.polymap, i)[2:end])) ≈
+              element(expected_right, Int.(PolySeries.getindexmap(desc.polymap, i)[2:end]))
+              for i in 1:desc.N)
+
+    square = CTPS(0.5, 1, desc)
+    expected_square = square * square
+    mul!(square, square, square)
+    @test cst(square) ≈ 0.25
+    @test element(square, [1, 0]) ≈ 1.0
+    @test all(element(square, Int.(PolySeries.getindexmap(desc.polymap, i)[2:end])) ≈
+              element(expected_square, Int.(PolySeries.getindexmap(desc.polymap, i)[2:end]))
+              for i in 1:desc.N)
+
+    # Poison an inactive block. Alias handling must copy only logically active
+    # coefficients and must not turn stale storage into polynomial terms.
+    separated = 1.0 + x^2
+    degree_one = desc.off[2]:(desc.off[2] + desc.Nd[2] - 1)
+    separated.c[degree_one] .= NaN
+    expected_separated = separated * separated
+    mul!(separated, separated, separated)
+    @test element(separated, [1, 0]) == 0.0
+    @test element(separated, [0, 1]) == 0.0
+    @test all(element(separated, Int.(PolySeries.getindexmap(desc.polymap, i)[2:end])) ≈
+              element(expected_separated, Int.(PolySeries.getindexmap(desc.polymap, i)[2:end]))
+              for i in 1:desc.N)
+
+    complex_square = CTPS(0.5 + 0.25im, 1, desc)
+    expected_complex_square = complex_square * complex_square
+    mul!(complex_square, complex_square, complex_square)
+    @test all(element(complex_square, Int.(PolySeries.getindexmap(desc.polymap, i)[2:end])) ≈
+              element(expected_complex_square, Int.(PolySeries.getindexmap(desc.polymap, i)[2:end]))
+              for i in 1:desc.N)
+end
+
 @testset "Dense multiplication" begin
     nv = 3
     order = 5

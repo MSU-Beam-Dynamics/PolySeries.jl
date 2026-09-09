@@ -10,6 +10,9 @@ x = CTPS(0.0, 1, desc)
 y = CTPS(0.0, 2, desc)
 variables = [x, y]
 
+# These illustrative helpers use zero-centered variables from the same
+# descriptor. Integration discards terms that would exceed its maximum order.
+
 function monomial(variables, exponents)
     result = CTPS(1.0, variables[1].desc)
     for (variable, exponent) in zip(variables, exponents)

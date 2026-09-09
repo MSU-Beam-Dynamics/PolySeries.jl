@@ -410,14 +410,15 @@ end
 
 # Fast internal constructors that reuse an existing PSDesc (no lock acquisition).
 @inline function _ctps_constant(a::T, desc::PSDesc) where T
-    c = Vector{T}(undef, desc.N)   # lazy: only c[1] is written
+    c = within_autodiff() ? zeros(T, desc.N) : Vector{T}(undef, desc.N)
     c[1] = a
     mask = _prunable_zero(a) ? UInt64(0) : UInt64(1)
     return CTPS{T}(c, desc, Ref(mask))
 end
 
 @inline function _ctps_zero(::Type{T}, desc::PSDesc) where T
-    return CTPS{T}(Vector{T}(undef, desc.N), desc, Ref(UInt64(0)))
+    c = within_autodiff() ? zeros(T, desc.N) : Vector{T}(undef, desc.N)
+    return CTPS{T}(c, desc, Ref(UInt64(0)))
 end
 
 # ── Thread-local pool: acquire / release ─────────────────────────────────────
@@ -585,10 +586,27 @@ Base.eltype(::Type{ActiveRanges}) = Tuple{Int,Int}
     return ((start, stop), remaining)
 end
 
-# Copy constructor — only copies active coefficient runs.
-# Inactive blocks remain uninitialized and must never be read.
+# Copy constructor — ordinarily copies only active coefficient runs. During AD,
+# it materializes every coefficient through `_coefficient` so structural zeros
+# retain tangent paths without reading uninitialized inactive storage.
 function CTPS(M::CTPS{T}) where T
     desc = M.desc
+    if within_autodiff()
+        # Materialize structural zeros through the differentiable accessor.
+        # Reading M.c directly would touch uninitialized inactive storage;
+        # copying only active blocks would discard tangents at zero values.
+        c = Vector{T}(undef, desc.N)
+        mask = M.degree_mask[]
+        for degree in 0:desc.order
+            s = desc.off[degree + 1]
+            e = s + desc.Nd[degree + 1] - 1
+            @inbounds for i in s:e
+                c[i] = _coefficient(M.c, mask, i, degree)
+            end
+        end
+        full_mask = typemax(UInt64) >> (63 - desc.order)
+        return CTPS{T}(c, desc, Ref(full_mask))
+    end
     c    = Vector{T}(undef, desc.N)   # lazy: only active range is written
     mask = M.degree_mask[]
     if mask != 0
@@ -599,6 +617,16 @@ function CTPS(M::CTPS{T}) where T
         end
     end
     return CTPS{T}(c, desc, Ref(mask))
+end
+
+# Arithmetic must not treat a prebuilt input's sparsity as derivative activity.
+# A dense AD copy uses the accessor rules to preserve coefficient sensitivities
+# without reading inactive storage. Already dense inputs need no extra copy.
+@inline function _ad_input(p::CTPS)
+    if within_autodiff() && p.degree_mask[] != typemax(UInt64) >> (63 - p.desc.order)
+        return CTPS(p)
+    end
+    return p
 end
 
 # Convenience constructors capture this task's default at construction time.
@@ -656,62 +684,46 @@ end
 
 @inline cst(ctps::CTPS) = _coefficient(ctps.c, ctps.degree_mask[], 1, 0)
 
-function findindex(ctps::CTPS{T}, indexmap::Vector{Int}) where T
-    # find the index of the indexmap in the coefficient vector
-    # indexmap is a vector of length nv + 1, e.g. [0, 1, 1] for x1^1 * x2^1
+function findindex(ctps::CTPS, indexmap::Vector{Int})
     dim = ctps.desc.nv
-    if length(indexmap) == dim
-        # Compute total and work with conceptual [total; indexmap]
-        total = Base.sum(indexmap)
-        # Build cumsum incrementally: cumsum[1]=total, cumsum[i]=cumsum[i-1]-indexmap[i-1]
-        # We read conceptual indexmap as: [total; indexmap[1]; indexmap[2]; ...; indexmap[dim]]
-        cumsum_val = total
-        result = Int(1)
-        for i in dim:-1:1
-            # We need cumsum[dim - i + 1]
-            # cumsum[1] = total (already have)
-            # cumsum[2] = total - indexmap[1]
-            # cumsum[k] = total - sum(indexmap[1:k-1])
-            # For iteration i (dim downto 1), we need cumsum[dim - i + 1]
-            # So we need to have subtracted indexmap[1:dim-i]
-            # Build cumsum by subtracting as we go backwards
-            if cumsum_val == 0
-                break
-            end
-            if cumsum_val < 0
-                error("The index map has invalid component")
-            end
-            result += binomial(cumsum_val - 1 + i, i)
-            # Prepare for next iteration: subtract indexmap[dim - i + 1]
-            cumsum_val -= indexmap[dim - i + 1]
-        end
-        return result
+    n = length(indexmap)
+    (n == dim || n == dim + 1) ||
+        throw(ArgumentError("Exponent vector must have length $dim or $(dim + 1), got $n"))
+
+    prefixed = n == dim + 1
+    degree = prefixed ? indexmap[1] : 0
+    if prefixed
+        0 <= degree <= ctps.desc.order ||
+            throw(ArgumentError("Total degree must be between 0 and $(ctps.desc.order), got $degree"))
     end
-    if length(indexmap) != (dim + 1)
-        error("Index map does not have correct length")
+
+    first_exponent = prefixed ? 2 : 1
+    exponent_sum = 0
+    @inbounds for j in first_exponent:n
+        exponent = indexmap[j]
+        exponent >= 0 || throw(ArgumentError("Exponents must be nonnegative, got $exponent at position $j"))
+        limit = prefixed ? degree : ctps.desc.order
+        exponent <= limit - exponent_sum ||
+            throw(ArgumentError(prefixed ?
+                "Degree prefix $degree does not equal the sum of the exponents" :
+                "Total degree exceeds descriptor order $(ctps.desc.order)"))
+        exponent_sum += exponent
     end
-    # Original pattern: cumsum[1]=indexmap[1], cumsum[i]=cumsum[i-1]-indexmap[i]
-    # For i in dim:-1:1, we need cumsum[dim - i + 1]
-    # Build cumsum values incrementally without allocating array
-    # cumsum[k] = indexmap[1] - sum(indexmap[2:k])
-    
-    # Start: we'll build cumsum values on the fly
-    # For the first iteration (i=dim), we need cumsum[1] = indexmap[1]
-    cumsum_val = indexmap[1]
+    if prefixed
+        exponent_sum == degree ||
+            throw(ArgumentError("Degree prefix $degree does not equal the sum of the exponents ($exponent_sum)"))
+    else
+        degree = exponent_sum
+    end
+
+    # Rank the validated exponent vector in the descriptor's graded ordering.
+    cumsum_val = degree
     result = Int(1)
-    
     for i in dim:-1:1
-        # At loop entry, cumsum_val = cumsum[dim - i + 1]
-        if cumsum_val == 0
-            break
-        end
-        if cumsum_val < 0 || indexmap[dim - i + 2] < 0
-            error("The index map has invalid component")
-        end
+        cumsum_val == 0 && break
         result += binomial(cumsum_val - 1 + i, i)
-        # Update cumsum_val for next iteration: cumsum[dim-i+2] = cumsum[dim-i+1] - indexmap[dim-i+2]
-        if i > 1  # Only update if there's a next iteration
-            cumsum_val -= indexmap[dim - i + 2]
+        if i > 1
+            cumsum_val -= indexmap[dim - i + first_exponent]
         end
     end
     return result
@@ -804,15 +816,16 @@ function (ctps::CTPS{T})(args::T...) where T
     length(args) == nv ||
         error("Number of arguments does not match the number of variables in the CTPS")
 
-    mask = ctps.degree_mask[]
+    source_mask = ctps.degree_mask[]
+    mask = within_autodiff() ? typemax(UInt64) >> (63 - desc.order) : source_mask
     mask == 0 && return zero(T)   # identically-zero polynomial fast path
 
     pm         = desc.polymap.map
-    return_value = (mask & UInt64(1)) != 0 ? ctps.c[1] : zero(T)
+    return_value = cst(ctps)
 
     for (lo, hi) in active_ranges(desc, mask & ~UInt64(1))
         @inbounds for i in lo:hi
-            val = ctps.c[i]
+            val = within_autodiff() ? _coefficient(ctps.c, source_mask, i, Int(pm[i, 1])) : ctps.c[i]
             _prunable_zero(val) && continue       # skip zero coefficients early
             for v in 1:nv
                 e = Int(pm[i, v + 1])     # Enzyme prefers Int
@@ -983,6 +996,8 @@ end
 
 
 function add!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
+    ctps1 = _ad_input(ctps1)
+    ctps2 = _ad_input(ctps2)
     _check_descriptors(result, ctps1)
     _check_descriptors(ctps1, ctps2)
     m1 = ctps1.degree_mask[]; m2 = ctps2.degree_mask[]
@@ -1012,6 +1027,7 @@ function add!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
 end
 
 function add!(result::CTPS{T}, ctps1::CTPS{T}, a::T) where T
+    ctps1 = _ad_input(ctps1)
     _check_descriptors(result, ctps1)
     m1 = ctps1.degree_mask[]
     if m1 != 0
@@ -1029,6 +1045,7 @@ function add!(result::CTPS{T}, ctps1::CTPS{T}, a::T) where T
 end
 
 function addto!(ctps1::CTPS{T}, ctps2::CTPS{T}) where T
+    within_autodiff() && return add!(ctps1, ctps1, ctps2)
     _check_descriptors(ctps1, ctps2)
     m2 = ctps2.degree_mask[]
     m2 == 0 && return nothing
@@ -1050,6 +1067,8 @@ function addto!(ctps1::CTPS{T}, ctps2::CTPS{T}) where T
 end
 
 function sub!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
+    ctps1 = _ad_input(ctps1)
+    ctps2 = _ad_input(ctps2)
     _check_descriptors(result, ctps1)
     _check_descriptors(ctps1, ctps2)
     m1 = ctps1.degree_mask[]; m2 = ctps2.degree_mask[]
@@ -1079,6 +1098,7 @@ function sub!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
 end
 
 function subfrom!(ctps1::CTPS{T}, ctps2::CTPS{T}) where T
+    within_autodiff() && return sub!(ctps1, ctps1, ctps2)
     _check_descriptors(ctps1, ctps2)
     m2 = ctps2.degree_mask[]
     m2 == 0 && return nothing
@@ -1100,6 +1120,7 @@ function subfrom!(ctps1::CTPS{T}, ctps2::CTPS{T}) where T
 end
 
 function scale!(ctps::CTPS{T}, a::T) where T
+    within_autodiff() && return scale!(ctps, ctps, a)
     mask = ctps.degree_mask[]
     if mask != 0
         for (s, e) in active_ranges(ctps.desc, mask)
@@ -1113,6 +1134,7 @@ end
 
 # 3-arg scale: dest = src * a  (range-limited copy + multiply)
 function scale!(dest::CTPS{T}, src::CTPS{T}, a::T) where T
+    src = _ad_input(src)
     _check_descriptors(dest, src)
     sm = src.degree_mask[]
     dm = dest.degree_mask[]
@@ -1138,6 +1160,8 @@ end
 # The canonical in-place form of the linear combination `a*c1 + b*c2 → result`.
 # Used in the rotation step: nx1 = cos_μ*x1 + sin_μ*pmx.
 function scaleadd!(result::CTPS{T}, a::T, c1::CTPS{T}, b::T, c2::CTPS{T}) where T
+    c1 = _ad_input(c1)
+    c2 = _ad_input(c2)
     _check_descriptors(result, c1)
     _check_descriptors(c1, c2)
     m1   = c1.degree_mask[]
@@ -1241,6 +1265,7 @@ Zeros only the active degree range before returning — O(active_range)."""
 end
 
 function copy!(dest::CTPS{T}, src::CTPS{T}) where T
+    src = _ad_input(src)
     _check_descriptors(dest, src)
     # Zero out any degrees in dest that src doesn't have, then copy active range
     src_mask  = src.degree_mask[]
@@ -1276,6 +1301,11 @@ end
 # As in pool/workspace release, the entire value is discarded: clearing gaps
 # in the bounding interval is safe and avoids unnecessary per-run overhead.
 @inline function _zero_active!(ctps::CTPS{T}) where T
+    if within_autodiff()
+        fill!(ctps.c, zero(T))
+        ctps.degree_mask[] = UInt64(0)
+        return nothing
+    end
     dm = ctps.degree_mask[]
     if dm != 0
         (s, e) = active_range_bounds(ctps.desc, dm)
@@ -1289,6 +1319,7 @@ end
 # not yet written.  On first touch of a degree block we use = (initialise)
 # rather than += (accumulate) to avoid reading garbage.
 @inline function _add_scaled!(sum::CTPS{T}, term::CTPS{T}, scale::T) where T
+    within_autodiff() && return scaleadd!(sum, one(T), sum, scale, term)
     _check_descriptors(sum, term)
     tm = term.degree_mask[]
     (_prunable_zero(scale) || tm == 0) && return
@@ -1325,8 +1356,34 @@ end
 #   for (i in di-block, j in dj-block) equals the index for (j in dj-block, i in
 #   di-block), because exp[i]+exp[j] == exp[j]+exp[i] (exponent addition commutes).
 function mul!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
+    ctps1 = _ad_input(ctps1)
+    ctps2 = _ad_input(ctps2)
     _check_descriptors(result, ctps1)
     _check_descriptors(ctps1, ctps2)
+    aliases1 = result.c === ctps1.c
+    aliases2 = result.c === ctps2.c
+    if aliases1 || aliases2
+        idx1 = UInt8(0)
+        idx2 = UInt8(0)
+        input1 = ctps1
+        input2 = ctps2
+        try
+            if aliases1
+                idx1, input1 = _ctps_pooled_copy(ctps1, ctps1.desc)
+            end
+            if aliases2
+                if ctps2.c === ctps1.c && ctps2.degree_mask === ctps1.degree_mask
+                    input2 = input1
+                else
+                    idx2, input2 = _ctps_pooled_copy(ctps2, ctps2.desc)
+                end
+            end
+            return mul!(result, input1, input2)
+        finally
+            aliases1 && _pool_release!(idx1, input1, ctps1.desc)
+            idx2 != 0 && _pool_release!(idx2, input2, ctps2.desc)
+        end
+    end
     desc  = ctps1.desc
     order = desc.order
     c1    = ctps1.c
@@ -1533,7 +1590,8 @@ function _compose_retained!(result::CTPS{T}, f::CTPS{T}, g::AbstractVector{<:CTP
     desc  = f.desc
     nv    = desc.nv
     N     = desc.N
-    fm    = f.degree_mask[]
+    source_mask = f.degree_mask[]
+    fm    = within_autodiff() ? typemax(UInt64) >> (63 - desc.order) : source_mask
     plan  = desc.comp_plan
 
     length(g) == nv ||
@@ -1547,17 +1605,16 @@ function _compose_retained!(result::CTPS{T}, f::CTPS{T}, g::AbstractVector{<:CTP
     fm == 0 && return result     # f is the zero polynomial
 
     # Constant term: result += f.c[1]
-    if (fm & UInt64(1)) != 0 && !_prunable_zero(f.c[1])
-        result.c[1]          = f.c[1]
+    if (fm & UInt64(1)) != 0 && !_prunable_zero(cst(f))
+        result.c[1]          = cst(f)
         result.degree_mask[] |= UInt64(1)
     end
 
     par_idx  = plan.par_idx
     par_var  = plan.par_var
 
-    # Maximum degree present in f.  No monomial images beyond this are needed,
-    # and no f.c[i] reads beyond this range are safe (undef-allocated buffers
-    # are only initialized up to the active degree band by mul!/add!/etc.).
+    # AD includes every degree: an inactive primal coefficient can still have
+    # a tangent. Ordinary execution needs only the degrees present in f.
     max_deg_f = (63 - leading_zeros(fm)) % Int
     N_eff     = desc.off[max_deg_f + 1] + desc.Nd[max_deg_f + 1] - 1
 
@@ -1574,13 +1631,12 @@ function _compose_retained!(result::CTPS{T}, f::CTPS{T}, g::AbstractVector{<:CTP
         mul!(img, g[pv], mono_img[pi])
         mono_img[i] = img
 
-        # Guard: only read f.c[i] for degrees active in f.
-        # Coefficients outside the active degree band are uninitialized garbage
-        # (from the undef-allocated buffer used by _ctps_zero / mul! / etc.).
+        # The accessor supplies zero for inactive primal storage while its AD
+        # rule preserves coefficient tangents independently of the primal mask.
         d = Int(desc.polymap.map[i, 1])
         ((fm >> d) & UInt64(1)) == 0 && continue
 
-        coeff = f.c[i]
+        coeff = _coefficient(f.c, source_mask, i, d)
         _prunable_zero(coeff) || _add_scaled!(result, img, coeff)
     end
 
@@ -1626,6 +1682,7 @@ function +(ctps1::CTPS{T}, ctps2::CTPS{T}) where T
 end
 
 function +(ctps::CTPS{T}, a::Number) where T
+    ctps = _ad_input(ctps)
     ctps_new = CTPS(ctps)   # range-limited undef copy
     m = ctps.degree_mask[]
     c0 = (m & UInt64(1) != 0) ? ctps.c[1] : zero(T)
@@ -1649,6 +1706,7 @@ function -(ctps1::CTPS{T}, ctps2::CTPS{T}) where T
 end
 
 function -(ctps::CTPS{T}, a::Number) where T
+    ctps = _ad_input(ctps)
     ctps_new = CTPS(ctps)
     m = ctps.degree_mask[]
     c0 = (m & UInt64(1) != 0) ? ctps.c[1] : zero(T)
@@ -1658,6 +1716,7 @@ function -(ctps::CTPS{T}, a::Number) where T
 end
 
 function -(a::Number, ctps::CTPS{T}) where T
+    ctps = _ad_input(ctps)
     mask = ctps.degree_mask[]
     desc = ctps.desc
     c = Vector{T}(undef, desc.N)   # lazy: only active range written
@@ -1675,6 +1734,7 @@ function -(a::Number, ctps::CTPS{T}) where T
 end
 
 function -(ctps::CTPS{T}) where T
+    ctps = _ad_input(ctps)
     ctps_new = CTPS(ctps)   # range-limited copy
     mask = ctps.degree_mask[]
     if mask != 0
@@ -1773,7 +1833,7 @@ function exp(ctps::CTPS{T}) where T
     desc = ctps.desc
     # Fast path: polynomial is identically zero → exp(0) = 1 exactly.
     # NOTE: do NOT shortcut on `a0 == 0` alone — there may be non-zero higher terms.
-    ctps.degree_mask[] == 0 && return _ctps_constant(one(T), desc)
+    ctps.degree_mask[] == 0 && !within_autodiff() && return _ctps_constant(one(T), desc)
 
     temp = CTPS(ctps)          # heap copy
     temp.c[1] = zero(T)
@@ -1783,12 +1843,12 @@ function exp(ctps::CTPS{T}) where T
     term_next = _ctps_zero(T, desc)      # pre-allocated; swapped each iteration
     sum       = _ctps_constant(one(T), desc)
 
-    inv_fac = one(T)
     for i in 1:desc.order
-        inv_fac /= T(i)
+        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
+        scale!(term, one(T) / T(i))
         mul!(term_next, term, temp)
         term, term_next = term_next, term  # swap bindings — zero-cost, no copy
-        _add_scaled!(sum, term, inv_fac)
+        _add_scaled!(sum, term, one(T))
     end
     scale!(sum, T(Base.exp(a0)))
     return sum
@@ -1800,7 +1860,7 @@ function exp!(result::CTPS{T}, ctps::CTPS{T}) where T
     desc = ctps.desc
     # Fast path: polynomial is identically zero → exp(0) = 1 exactly.
     # NOTE: do NOT shortcut on `a0 == 0` alone — there may be non-zero higher terms.
-    if ctps.degree_mask[] == 0
+    if ctps.degree_mask[] == 0 && !within_autodiff()
         _zero_active!(result)
         result.c[1] = one(T)
         result.degree_mask[] = UInt64(1)
@@ -1822,12 +1882,13 @@ function exp!(result::CTPS{T}, ctps::CTPS{T}) where T
 
     (idx_tn,   term_next) = _ctps_pooled(T, desc)
 
-    inv_fac = one(T)
     for i in 1:desc.order
-        inv_fac /= T(i)
+        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
+        scale!(term, one(T) / T(i))
         mul!(term_next, term, temp)
-        copy!(term, term_next)
-        _add_scaled!(result, term, inv_fac)
+        term, term_next = term_next, term
+        idx_term, idx_tn = idx_tn, idx_term # Keep pool ownership with its buffer.
+        _add_scaled!(result, term, one(T))
     end
 
     scale!(result, T(Base.exp(a0)))
@@ -1895,7 +1956,8 @@ function log!(result::CTPS{T}, ctps::CTPS{T}) where T
 
     for i in 2:desc.order
         mul!(term_next, term, neg_temp_over_a0)
-        copy!(term, term_next)
+        term, term_next = term_next, term
+        idx_term, idx_tn = idx_tn, idx_term # Keep pool ownership with its buffer.
         _add_scaled!(result, term, one(T) / T(i))
     end
 
@@ -1911,6 +1973,7 @@ end
 # square root (minimal allocations)
 function sqrt(ctps::CTPS{T}) where T
     a0_val = cst(ctps)
+    iszero(a0_val) && throw(DomainError(a0_val, "Square root requires a nonzero expansion center"))
     T <: Real && a0_val < zero(T) && error("Square root of negative number in CTPS")
     a0   = Base.sqrt(a0_val)
     desc = ctps.desc
@@ -1944,6 +2007,7 @@ end
 function sqrt!(result::CTPS{T}, ctps::CTPS{T}) where T
     _check_descriptors(result, ctps)
     a0_val = cst(ctps)
+    iszero(a0_val) && throw(DomainError(a0_val, "Square root requires a nonzero expansion center"))
     if T <: Real && a0_val < zero(T)
         error("Square root of negative number in CTPS")
     end
@@ -1987,7 +2051,13 @@ function pow(ctps::CTPS{T}, b::Int) where T
     desc = ctps.desc
     b == 1 && return CTPS(ctps)
     b == 0 && return _ctps_constant(one(T), desc)
-    b < 0  && return inv(pow(ctps, -b))
+    if b < 0
+        reciprocal = inv(ctps)
+        # Invert first to avoid overflowing a positive intermediate power.
+        # -(b + 1) also remains representable for typemin(Int).
+        return b == typemin(Int) ? pow(reciprocal, -(b + 1)) * reciprocal :
+                                  pow(reciprocal, -b)
+    end
 
     # Fast paths for common small exponents (1 or 2 mul! calls, minimal allocs)
     if b == 2
@@ -2116,14 +2186,14 @@ function sin(ctps::CTPS{T}) where T
     sum       = _ctps_zero(T, desc)
 
     is_odd = true
-    inv_fac = one(T)
     for i in 1:desc.order
-        inv_fac /= T(i)
+        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
+        scale!(term, one(T) / T(i))
         mul!(term_next, term, temp)
         term, term_next = term_next, term  # swap bindings — zero-cost, no copy
         coeff = is_odd ?
-            cos_a0 * T((-1)^((i-1)÷2)) * inv_fac :
-            sin_a0 * T((-1)^(i÷2))     * inv_fac
+            cos_a0 * T((-1)^((i-1)÷2)) :
+            sin_a0 * T((-1)^(i÷2))
         _add_scaled!(sum, term, coeff)
         is_odd = !is_odd
     end
@@ -2153,15 +2223,16 @@ function sin!(result::CTPS{T}, ctps::CTPS{T}) where T
     (idx_tn,   term_next) = _ctps_pooled(T, desc)
 
     is_odd = true
-    inv_fac = one(T)
     for i in 1:desc.order
-        inv_fac /= T(i)
+        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
+        scale!(term, one(T) / T(i))
         mul!(term_next, term, temp)
-        copy!(term, term_next)
+        term, term_next = term_next, term
+        idx_term, idx_tn = idx_tn, idx_term # Keep pool ownership with its buffer.
         coeff = if is_odd
-            cos_a0 * T((-1) ^ ((i - 1) ÷ 2)) * inv_fac
+            cos_a0 * T((-1) ^ ((i - 1) ÷ 2))
         else
-            sin_a0 * T((-1) ^ (i ÷ 2)) * inv_fac
+            sin_a0 * T((-1) ^ (i ÷ 2))
         end
         _add_scaled!(result, term, coeff)
         is_odd = !is_odd
@@ -2190,14 +2261,14 @@ function cos(ctps::CTPS{T}) where T
     sum       = _ctps_zero(T, desc)
 
     is_odd = true
-    inv_fac = one(T)
     for i in 1:desc.order
-        inv_fac /= T(i)
+        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
+        scale!(term, one(T) / T(i))
         mul!(term_next, term, temp)
         term, term_next = term_next, term  # swap bindings — zero-cost, no copy
         coeff = is_odd ?
-            sin_a0 * T((-1)^((i+1)÷2)) * inv_fac :
-            cos_a0 * T((-1)^(i÷2))     * inv_fac
+            sin_a0 * T((-1)^((i+1)÷2)) :
+            cos_a0 * T((-1)^(i÷2))
         _add_scaled!(sum, term, coeff)
         is_odd = !is_odd
     end
@@ -2228,15 +2299,16 @@ function cos!(result::CTPS{T}, ctps::CTPS{T}) where T
     (idx_tn,   term_next) = _ctps_pooled(T, desc)
 
     is_odd = true
-    inv_fac = one(T)
     for i in 1:desc.order
-        inv_fac /= T(i)
+        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
+        scale!(term, one(T) / T(i))
         mul!(term_next, term, temp)
-        copy!(term, term_next)
+        term, term_next = term_next, term
+        idx_term, idx_tn = idx_tn, idx_term # Keep pool ownership with its buffer.
         coeff = if is_odd
-            sin_a0 * T((-1) ^ ((i + 1) ÷ 2)) * inv_fac
+            sin_a0 * T((-1) ^ ((i + 1) ÷ 2))
         else
-            cos_a0 * T((-1) ^ (i ÷ 2)) * inv_fac
+            cos_a0 * T((-1) ^ (i ÷ 2))
         end
         _add_scaled!(result, term, coeff)
         is_odd = !is_odd
@@ -2257,7 +2329,8 @@ end
 # Split f = a0 + h  (a0 = constant term, h has zero constant).
 # We need g = asin(f) = asin(a0) + Σ_{k=1}^{order} A[k] h^k.
 #
-# Let s = sqrt(1 - f²) = sqrt(c0² - 2a0·h - h²),  c0 = sqrt(1-a0²).
+# Let s² = 1 - f² = c0² - 2a0·h - h². The sign of c0 must agree
+# with the scalar asin branch (including signed zeros on complex cuts).
 # Write s = Σ B[k] h^k.  From s² = c0² - 2a0·h - h²:
 #   B[0] = c0
 #   B[n] = (R[n] - Σ_{j=1}^{n-1} B[j]B[n-j]) / (2c0),
@@ -2269,8 +2342,19 @@ end
 #
 # Complexity: O(order²) scalar ops, then one loop of order CTPS mul!/add —
 # identical structure to sin/cos, zero inner CTPS calls.
+@inline _asin_root(a0) = Base.sqrt(one(a0) - a0 * a0)
+@inline function _asin_root(a0::Complex)
+    a, b = reim(a0)
+    # sqrt(1-z)*sqrt(1+z) selects the derivative branch of Base.asin.
+    # Construct the imaginary parts explicitly: complex subtraction can lose
+    # the -0.0 in 1-(a+0.0im), selecting the other side of the cut.
+    return Base.sqrt(Complex(one(a) - a, -b)) *
+           Base.sqrt(Complex(one(a) + a, b))
+end
+
 @inline function _asin_coeffs(a0::T, order::Int) where T
-    c0     = Base.sqrt(one(T) - a0 * a0)
+    c0     = _asin_root(a0)
+    iszero(c0) && throw(DomainError(a0, "Inverse trigonometric series require a nonsingular expansion center"))
     inv_c0 = one(T) / c0
 
     # B[k+1] stores mathematical B[k],  k = 0..order
@@ -2353,7 +2437,8 @@ function asin!(result::CTPS{T}, ctps::CTPS{T}) where T
 
     for i in 1:order
         mul!(term_next, term, temp)
-        copy!(term, term_next)
+        term, term_next = term_next, term
+        idx_term, idx_tn = idx_tn, idx_term # Keep pool ownership with its buffer.
         _add_scaled!(result, term, A[i])
     end
     result.c[1] = asin_a0
@@ -2366,15 +2451,22 @@ end
 
 # arccos
 function acos(ctps::CTPS{T}) where T
-    return (T(π) / T(2)) - asin(ctps)
+    a0 = cst(ctps)
+    result = -asin(ctps)
+    # Use the scalar implementation for its precision and signed-zero branch;
+    # subtracting asin(a0) from pi/2 loses both near a0=1.
+    result.c[1] = Base.acos(a0)
+    result.degree_mask[] |= UInt64(1)
+    return result
 end
 
 function acos!(result::CTPS{T}, ctps::CTPS{T}) where T
     _check_descriptors(result, ctps)
+    acos_a0 = Base.acos(cst(ctps)) # Capture before an aliased input is overwritten.
     asin!(result, ctps)          # result = asin(ctps)
     scale!(result, -one(T))      # result = -asin(ctps);  degree_mask unchanged
-    result.c[1] += (T(π) / T(2))     # result = π/2 - asin(ctps) = acos(ctps)
-    result.degree_mask[] |= UInt64(1)  # degree-0 term is always non-zero
+    result.c[1] = acos_a0
+    result.degree_mask[] |= UInt64(1)
     return result
 end
 
@@ -2395,15 +2487,15 @@ function tan(ctps::CTPS{T}) where T
     cos_sum   = _ctps_zero(T, desc)
 
     is_odd = true
-    inv_fac = one(T)
     for i in 1:desc.order
-        inv_fac /= T(i)
+        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
+        scale!(term, one(T) / T(i))
         mul!(term_next, term, temp)
         term, term_next = term_next, term  # swap bindings — zero-cost, no copy
-        sin_coeff = is_odd ? cos_a0 * T((-1) ^ ((i - 1) ÷ 2)) * inv_fac :
-                             sin_a0 * T((-1) ^ (i ÷ 2))        * inv_fac
-        cos_coeff = is_odd ? sin_a0 * T((-1) ^ ((i + 1) ÷ 2)) * inv_fac :
-                             cos_a0 * T((-1) ^ (i ÷ 2))        * inv_fac
+        sin_coeff = is_odd ? cos_a0 * T((-1) ^ ((i - 1) ÷ 2)) :
+                             sin_a0 * T((-1) ^ (i ÷ 2))
+        cos_coeff = is_odd ? sin_a0 * T((-1) ^ ((i + 1) ÷ 2)) :
+                             cos_a0 * T((-1) ^ (i ÷ 2))
         _add_scaled!(sin_sum, term, sin_coeff)
         _add_scaled!(cos_sum, term, cos_coeff)
         is_odd = !is_odd
@@ -2435,12 +2527,12 @@ function sinh(ctps::CTPS{T}) where T
     sum       = _ctps_zero(T, desc)      # heap-allocated (returned)
 
     is_odd = true
-    inv_fac = one(T)
     for i in 1:desc.order
-        inv_fac /= T(i)
+        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
+        scale!(term, one(T) / T(i))
         mul!(term_next, term, temp)
         term, term_next = term_next, term  # swap bindings — zero-cost, no copy
-        coeff = is_odd ? cosh_a0 * inv_fac : sinh_a0 * inv_fac
+        coeff = is_odd ? cosh_a0 : sinh_a0
         _add_scaled!(sum, term, coeff)
         is_odd = !is_odd
     end
@@ -2471,12 +2563,13 @@ function sinh!(result::CTPS{T}, ctps::CTPS{T}) where T
     (idx_tn,   term_next) = _ctps_pooled(T, desc)
 
     is_odd = true
-    inv_fac = one(T)
     for i in 1:desc.order
-        inv_fac /= T(i)
+        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
+        scale!(term, one(T) / T(i))
         mul!(term_next, term, temp)
-        copy!(term, term_next)
-        coeff = is_odd ? cosh_a0 * inv_fac : sinh_a0 * inv_fac
+        term, term_next = term_next, term
+        idx_term, idx_tn = idx_tn, idx_term # Keep pool ownership with its buffer.
+        coeff = is_odd ? cosh_a0 : sinh_a0
         _add_scaled!(result, term, coeff)
         is_odd = !is_odd
     end
@@ -2505,12 +2598,12 @@ function cosh(ctps::CTPS{T}) where T
     sum       = _ctps_zero(T, desc)      # heap-allocated (returned)
 
     is_odd = true
-    inv_fac = one(T)
     for i in 1:desc.order
-        inv_fac /= T(i)
+        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
+        scale!(term, one(T) / T(i))
         mul!(term_next, term, temp)
         term, term_next = term_next, term  # swap bindings — zero-cost, no copy
-        coeff = is_odd ? sinh_a0 * inv_fac : cosh_a0 * inv_fac
+        coeff = is_odd ? sinh_a0 : cosh_a0
         _add_scaled!(sum, term, coeff)
         is_odd = !is_odd
     end
@@ -2541,12 +2634,13 @@ function cosh!(result::CTPS{T}, ctps::CTPS{T}) where T
     (idx_tn,   term_next) = _ctps_pooled(T, desc)
 
     is_odd = true
-    inv_fac = one(T)
     for i in 1:desc.order
-        inv_fac /= T(i)
+        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
+        scale!(term, one(T) / T(i))
         mul!(term_next, term, temp)
-        copy!(term, term_next)
-        coeff = is_odd ? sinh_a0 * inv_fac : cosh_a0 * inv_fac
+        term, term_next = term_next, term
+        idx_term, idx_tn = idx_tn, idx_term # Keep pool ownership with its buffer.
+        coeff = is_odd ? sinh_a0 : cosh_a0
         _add_scaled!(result, term, coeff)
         is_odd = !is_odd
     end

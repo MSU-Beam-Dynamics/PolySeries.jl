@@ -1,5 +1,42 @@
 using Test, PolySeries
 
+@testset "Math buffer swaps preserve pool ownership" begin
+    for order in 0:4
+        desc = PSDesc(1, order)
+        pool = desc._pools[Threads.threadid()]
+        capacity = pool.sp
+        source = order == 0 ? CTPS(0.4, desc) : CTPS(0.4, 1, desc)
+        out = CTPS(Float64, desc)
+        # Exercise all-heap, mixed pooled/heap, and fully pooled temporaries.
+        for available in (0, 1, 2, 3, 4, capacity)
+            held = [PolySeries._ctps_pooled_copy(source, desc)
+                    for _ in 1:(capacity - available)]
+            free_slots = sort(pool.avail[1:pool.sp])
+            try
+                for (f, f!) in ((exp, exp!), (log, log!), (sin, sin!), (cos, cos!),
+                                (sinh, sinh!), (cosh, cosh!), (asin, asin!), (acos, acos!))
+                    expected = f(source)
+                    f!(out, source)
+                    @test all(isapprox(element(out, [d]), element(expected, [d]))
+                              for d in 0:order)
+                    @test pool.sp == available
+                    @test sort(pool.avail[1:pool.sp]) == free_slots
+                    @test all(cst(p) == 0.4 for (_, p) in held)
+                    if order > 0
+                        @test all(element(p, [1]) == 1.0 for (_, p) in held)
+                    end
+                end
+            finally
+                for (idx, p) in held
+                    PolySeries._pool_release!(idx, p, desc)
+                end
+            end
+            @test pool.sp == capacity
+            @test length(unique(pool.avail[1:pool.sp])) == capacity
+        end
+    end
+end
+
 @testset "In-place math preserves aliased input" begin
     for T in (Float64, BigFloat)
         desc = PSDesc(1, 5)

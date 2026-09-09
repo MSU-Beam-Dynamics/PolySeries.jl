@@ -14,12 +14,18 @@ end
     blocks = [match.captures[1] for match in eachmatch(pattern, readme)]
 
     @test length(blocks) == 2
+    # Every Julia block except the installation command must opt into testing.
+    julia_blocks = [m.captures[1] for m in eachmatch(r"```julia\r?\n(.*?)\r?\n```"s, readme)]
+    @test length(julia_blocks) == length(blocks) + 1
+    @test count(code -> occursin("Pkg.add(", code), julia_blocks) == 1
     mktempdir() do sandbox
         for (index, code) in enumerate(blocks)
             @testset "block $index" begin
                 script = joinpath(sandbox, "readme_example_$index.jl")
                 write(script, code)
-                passed, output = run_example_script(script, package_root)
+                # Pkg.test supplies a resolved temporary environment even in
+                # a clean checkout without a root Manifest.toml.
+                passed, output = run_example_script(script, dirname(Base.active_project()))
                 passed || println(output)
                 @test passed
             end

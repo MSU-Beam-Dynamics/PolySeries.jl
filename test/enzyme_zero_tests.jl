@@ -28,6 +28,7 @@ end
         ("zero product", a -> element(CTPS(a) * CTPS(0.0, 1), [1]), a -> 1.0),
         ("zero product coefficient", a -> element(CTPS(a, 1) * CTPS(0.0, 1), [1]), a -> 1.0),
         ("zero power coefficient", a -> element(CTPS(a, 1)^2, [1]), a -> 2.0),
+        ("negative power", a -> cst(pow(CTPS(2.0 + a, 1), -3)), a -> -3/(2.0+a)^4),
         ("evaluation", a -> (a * CTPS(0.0, 1))(0.25), a -> 0.25),
         ("composition", a -> element(compose(a * CTPS(0.0, 1), [CTPS(0.0, 1)]), [1]), a -> 1.0),
         ("coefficient mask update", _enzyme_written_coefficient, a -> 1.0),

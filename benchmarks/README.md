@@ -36,6 +36,15 @@ CSV output reports the minimum of five warm runs and allocated bytes per call.
 The 8,008-monomial retained baseline is skipped by default; use
 `--large-baseline` to include its roughly 489 MiB coefficient allocation.
 
+### benchmark_ad_sparsity.jl
+Measures the steady-state time and allocation cost of ordinary execution,
+Enzyme forward mode, and Enzyme reverse mode after inactive coefficient
+derivatives are preserved. It compares poisoned inactive inputs with fully
+materialized zero inputs from 9 through 8,008 coefficients.
+
+`benchmark_ad_sparsity_ordinary.jl` runs the ordinary subset in a fresh process
+that never loads Enzyme, for a strict measurement of the non-AD path.
+
 ## Running Benchmarks
 
 **Prerequisites:**

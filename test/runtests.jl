@@ -26,6 +26,10 @@ using PolySeries
         include("mathfunc_tests.jl")
     end
 
+    @testset "Complex Branches" begin
+        include("complex_branch_tests.jl")
+    end
+
     @testset "Documentation Examples" begin
         include("documentation_examples_tests.jl")
     end
@@ -40,6 +44,10 @@ using PolySeries
 
     @testset "Order Limits" begin
         include("order_limits_tests.jl")
+    end
+
+    @testset "Release edge cases" begin
+        include("release_edge_tests.jl")
     end
 
     @testset "Arithmetic Accuracy" begin
@@ -59,7 +67,7 @@ using PolySeries
     end
 
     @testset "Extension: PolySeriesEnzymeExt" begin
-        # Enzyme is a required dependency. Import/compiler failures must fail
+        # Enzyme is a required test extra. Import/compiler failures must fail
         # the suite rather than silently skip differentiation regressions.
         include("ext_enzyme_test.jl")
     end

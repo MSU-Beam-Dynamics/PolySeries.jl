@@ -1,10 +1,13 @@
 # Tests for the PolySeriesEnzymeExt package extension.
-# Enzyme is a required dependency; failures must not be skipped by the runner.
+# Enzyme is a required test extra; failures must not be skipped by the runner.
 
 using Enzyme
 
 include("enzyme_zero_tests.jl")
+include("enzyme_complex_branch_tests.jl")
+include("enzyme_normalized_series_tests.jl")
 include("enzyme_prebuilt_tests.jl")
+include("repro_prebuilt_zero_ad.jl")
 include("enzyme_descriptor_switch_tests.jl")
 
 @testset "Enzyme with an explicitly owned descriptor" begin
@@ -44,7 +47,7 @@ end
     g = Enzyme.gradient(Reverse, x0 -> cst(sin(CTPS(x0, 1))), 0.7)
     @test abs(g[1] - cos(0.7)) < 1e-12
 
-    # d/dx₀ element([2]) of exp(x₀ + δ) = exp(x₀)/1! = exp(x₀)
+    # d/dx₀ element([1]) of exp(x₀ + δ) = exp(x₀)/1! = exp(x₀)
     g = Enzyme.gradient(Reverse, x0 -> element(exp(CTPS(x0, 1)), [1]), 0.5)
     @test abs(g[1] - exp(0.5)) < 1e-12
 end
