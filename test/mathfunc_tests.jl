@@ -467,14 +467,27 @@ end
     tpsa_div_tan!(ws, r, a, b, x) = (@tpsa ws r = a / b + tan(x); r)
     tpsa_div_tan!(ws, r, a, b, x)                 # compile outside the measurement
     @test (@allocated tpsa_div_tan!(ws, r, a, b, x)) == 0
-    # Complex scalars reach the macro's scalar paths (no temporaries are needed
-    # here, so the Float64-only workspace is never borrowed from).
+    # Scalar sub-expressions are evaluated as numbers and borrow no slot:
+    # `(1+2)*(3-1)*x` needs none, `cos(μ)*x + sin(μ)*y` needs two.
+    tiny = PSWorkspace(desc, 1)
+    μ = 0.3
+    @tpsa tiny r = (1.0 + 2.0) * (3.0 - 1.0) * x
+    @test allc(r) ≈ allc(6.0 * x)
+    two = PSWorkspace(desc, 2)
+    @tpsa two r = cos(μ) * x + sin(μ) * y
+    @test allc(r) ≈ allc(cos(μ) * x + sin(μ) * y)
+    @test two.sp == 2
+    @tpsa two r = 2.5                                  # a bare number on the rhs
+    @test cst(r) == 2.5 && r.degree_mask[] == UInt64(1)
+    # Complex scalars therefore reach a complex lhs intact: `2.0im` is the call
+    # `2.0 * im`, which used to be forced through a Float64 slot (InexactError).
     cdesc = PSDesc(1, 3)
     cx = CTPS(0.0 + 0.0im, 1, cdesc)
     cr = CTPS(ComplexF64, cdesc)
     cws = PSWorkspace(cdesc, 4)
     @tpsa cws cr = (1.0 + 2.0im) * cx
     @test element(cr, [1]) == 1.0 + 2.0im
-    @tpsa cws cr = cx / (2.0im)
-    @test element(cr, [1]) == -0.5im
+    @tpsa cws cr = cx / (2.0im) - (0.5 + 0.5im)
+    @test element(cr, [1]) == -0.5im && cst(cr) == -0.5 - 0.5im
+    @test cws.sp == 4
 end

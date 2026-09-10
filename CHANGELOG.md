@@ -36,7 +36,9 @@ First registered release.
 - `sincos!(s, c, p)` computes both trigonometric series in one pass;
   `tan!`, `inv!` and `div!` complete the in-place API.
 - `@tpsa` supports `/`, `tan`, `asin`, `acos`, and `Number` (including
-  complex) scalars.
+  complex) scalars. Sub-expressions whose operands are all numbers are
+  evaluated as numbers and borrow no workspace slot, so `cos(μ)*x` lowers to
+  one `scale!` and fewer slots are needed overall.
 - `PSDesc` rejects descriptors whose index tables would exceed
   `PolySeries.MAX_DESCRIPTOR_BYTES[]` (default 2 GiB) instead of attempting
   the allocation.

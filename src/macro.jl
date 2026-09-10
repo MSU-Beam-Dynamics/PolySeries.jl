@@ -133,6 +133,54 @@ for f in (:sin, :cos, :tan, :exp, :log, :sqrt, :sinh, :cosh, :asin, :acos)
     end
 end
 
+# ── Scalar propagation ────────────────────────────────────────────────────────
+#
+# An intermediate whose operands are all plain numbers is itself a number: it
+# is evaluated here and no workspace slot is borrowed. A slot is taken only
+# when a series is involved. This keeps `cos(μ)*x` a scale! rather than a
+# series product of a constant, and lets a complex scalar such as `1.0 + 2.0im`
+# reach a complex `lhs` intact instead of being forced through a Float64 slot
+# (which raised InexactError). Types are concrete at each call site, so the
+# choice costs nothing at run time.
+@inline _tpsa_scalar(::Val{:+}, a, b) = a + b
+@inline _tpsa_scalar(::Val{:-}, a, b) = a - b
+@inline _tpsa_scalar(::Val{:*}, a, b) = a * b
+@inline _tpsa_scalar(::Val{:/}, a, b) = a / b
+@inline _tpsa_scalar(::Val{:^}, a, b) = a ^ b
+@inline _tpsa_scalar(::Val{:-}, a)    = -a
+for f in (:sin, :cos, :tan, :exp, :log, :sqrt, :sinh, :cosh, :asin, :acos)
+    @eval @inline _tpsa_scalar(::Val{$(QuoteNode(f))}, a) = $f(a)
+end
+
+# The storage for an intermediate: the evaluated number, or a borrowed slot.
+@inline _tpsa_slot(ws, op::Val, a::Number, b::Number) = _tpsa_scalar(op, a, b)
+@inline _tpsa_slot(ws, op::Val, a, b)                  = borrow!(ws)
+@inline _tpsa_slot(ws, op::Val, a::Number)             = _tpsa_scalar(op, a)
+@inline _tpsa_slot(ws, op::Val, a)                     = borrow!(ws)
+
+@inline _tpsa_release!(ws, t::CTPS) = release!(ws, t)
+@inline _tpsa_release!(ws, ::Number) = nothing
+
+# A scalar intermediate was already evaluated by _tpsa_slot: nothing to do.
+for helper in (:_tpsa_add!, :_tpsa_sub!, :_tpsa_mul!, :_tpsa_div!, :_tpsa_pow!)
+    @eval @inline $helper(out::Number, a::Number, b::Number) = out
+end
+@inline _tpsa_neg!(out::Number, a::Number) = out
+for f in (:sin, :cos, :tan, :exp, :log, :sqrt, :sinh, :cosh, :asin, :acos)
+    helper = Symbol("_tpsa_", f, "!")
+    @eval @inline $helper(out::Number, a::Number) = out
+end
+
+# `lhs = leaf`: copy a series, or store a number as a constant polynomial.
+@inline _tpsa_assign!(out::CTPS{T}, a::CTPS{T}) where T = copy!(out, a)
+@inline function _tpsa_assign!(out::CTPS{T}, a::Number) where T
+    val = T(a)
+    _zero_active!(out)
+    out.c[1] = val
+    out.degree_mask[] = _prunable_zero(val) ? UInt64(0) : UInt64(1)
+    return out
+end
+
 # ── AST helpers ───────────────────────────────────────────────────────────────
 
 # Returns true for expression nodes that should be treated as leaf values
@@ -189,85 +237,60 @@ function _tpsa_lower_expr(ast, ws_sym, stmts, lhs_sym, temporaries)
     f  = ast.args[1]
     na = length(ast.args) - 1
 
-    # Helper: allocate the output slot (lhs or a new borrow)
-    function get_out()
-        if lhs_sym !== nothing
-            return (lhs_sym, false)
-        else
-            t = gensym("tpsa")
-            live = gensym("tpsa_live")
-            temporaries[t] = live
-            push!(stmts, :($t = borrow!($ws_sym)))
-            push!(stmts, :($live = true))
-            return (t, true)
-        end
-    end
-
-    # Helper: release a result if it was borrowed
+    # Release an operand if it was a borrowed intermediate (a no-op at run time
+    # when that intermediate turned out to be a number).
     function maybe_release!(sym, is_tmp)
         if is_tmp
-            push!(stmts, :(release!($ws_sym, $sym)))
+            push!(stmts, :(_tpsa_release!($ws_sym, $sym)))
             push!(stmts, :($(temporaries[sym]) = false))
         end
     end
 
-    if f == :+ && na == 2
-        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts, nothing, temporaries)
-        (eb, tb) = _tpsa_lower_expr(ast.args[3], ws_sym, stmts, nothing, temporaries)
-        (out, tout) = get_out()
-        push!(stmts, :(_tpsa_add!($out, $ea, $eb)))
-        maybe_release!(ea, ta);  maybe_release!(eb, tb)
-        return (out, tout)
+    # Emit one operation: its storage (lhs, a borrowed slot, or — decided at
+    # run time — a plain number), the ownership flag, the in-place call, and
+    # the release of any operands that were intermediates.
+    function emit(op::Symbol, helper::Symbol, operands, owned)
+        if lhs_sym !== nothing
+            push!(stmts, :($helper($lhs_sym, $(operands...))))
+            for (e, o) in zip(operands, owned)
+                maybe_release!(e, o)
+            end
+            return (lhs_sym, false)
+        end
+        t    = gensym("tpsa")
+        live = gensym("tpsa_live")
+        temporaries[t] = live
+        push!(stmts, :($t = _tpsa_slot($ws_sym, Val($(QuoteNode(op))), $(operands...))))
+        push!(stmts, :($live = true))
+        push!(stmts, :($helper($t, $(operands...))))
+        for (e, o) in zip(operands, owned)
+            maybe_release!(e, o)
+        end
+        return (t, true)
+    end
 
-    elseif f == :- && na == 2
-        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts, nothing, temporaries)
-        (eb, tb) = _tpsa_lower_expr(ast.args[3], ws_sym, stmts, nothing, temporaries)
-        (out, tout) = get_out()
-        push!(stmts, :(_tpsa_sub!($out, $ea, $eb)))
-        maybe_release!(ea, ta);  maybe_release!(eb, tb)
-        return (out, tout)
+    lower(arg) = _tpsa_lower_expr(arg, ws_sym, stmts, nothing, temporaries)
 
+    binary = Dict(:+ => :_tpsa_add!, :- => :_tpsa_sub!, :* => :_tpsa_mul!, :/ => :_tpsa_div!)
+    unary  = (:sin, :cos, :tan, :exp, :log, :sqrt, :sinh, :cosh, :asin, :acos)
+
+    if na == 2 && haskey(binary, f)
+        (ea, ta) = lower(ast.args[2])
+        (eb, tb) = lower(ast.args[3])
+        return emit(f, binary[f], (ea, eb), (ta, tb))
     elseif f == :- && na == 1
-        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts, nothing, temporaries)
-        (out, tout) = get_out()
-        push!(stmts, :(_tpsa_neg!($out, $ea)))
-        maybe_release!(ea, ta)
-        return (out, tout)
-
-    elseif f == :* && na == 2
-        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts, nothing, temporaries)
-        (eb, tb) = _tpsa_lower_expr(ast.args[3], ws_sym, stmts, nothing, temporaries)
-        (out, tout) = get_out()
-        push!(stmts, :(_tpsa_mul!($out, $ea, $eb)))
-        maybe_release!(ea, ta);  maybe_release!(eb, tb)
-        return (out, tout)
-
-    elseif f == :/ && na == 2
-        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts, nothing, temporaries)
-        (eb, tb) = _tpsa_lower_expr(ast.args[3], ws_sym, stmts, nothing, temporaries)
-        (out, tout) = get_out()
-        push!(stmts, :(_tpsa_div!($out, $ea, $eb)))
-        maybe_release!(ea, ta);  maybe_release!(eb, tb)
-        return (out, tout)
-
+        (ea, ta) = lower(ast.args[2])
+        return emit(:-, :_tpsa_neg!, (ea,), (ta,))
     elseif f == :^ && na == 2
-        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts, nothing, temporaries)
-        n_expr   = esc(ast.args[3])   # exponent: can be literal or variable
-        (out, tout) = get_out()
-        push!(stmts, :(_tpsa_pow!($out, $ea, $n_expr)))
-        maybe_release!(ea, ta)
-        return (out, tout)
-
-    elseif na == 1 && f in (:sin, :cos, :tan, :exp, :log, :sqrt, :sinh, :cosh, :asin, :acos)
-        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts, nothing, temporaries)
-        f_bang   = Symbol("_tpsa_", f, "!")
-        (out, tout) = get_out()
-        push!(stmts, :($f_bang($out, $ea)))
-        maybe_release!(ea, ta)
-        return (out, tout)
-
+        (ea, ta) = lower(ast.args[2])
+        n_expr   = esc(ast.args[3])           # exponent: literal or variable, never owned
+        return emit(:^, :_tpsa_pow!, (ea, n_expr), (ta, false))
+    elseif na == 1 && f in unary
+        (ea, ta) = lower(ast.args[2])
+        return emit(f, Symbol("_tpsa_", f, "!"), (ea,), (ta,))
     else
-        # Unknown function call: treat as atomic leaf value
+        # Unknown function call: treat as an atomic leaf value (evaluated as
+        # ordinary, possibly allocating, code).
         return (esc(ast), false)
     end
 end
@@ -289,7 +312,10 @@ number of live intermediates in `expr`.
 `+`, `-`, `*`, `/`, unary `-`, `^n` (Int), `sin`, `cos`, `tan`, `exp`, `log`,
 `sqrt`, `sinh`, `cosh`, `asin`, `acos`. Scalar (`Number`) values may appear as
 either operand to `+`, `-`, `*`, `/`, and as arguments to the supported unary
-functions. Any other call is evaluated as an ordinary (allocating) expression.
+functions; a sub-expression whose operands are all numbers is evaluated as a
+number and borrows no slot, so `cos(μ)*x` is a single `scale!` and complex
+scalars reach a complex `lhs` intact. Any other call is evaluated as an
+ordinary (allocating) expression.
 
 # Example
 ```julia
@@ -318,9 +344,9 @@ macro tpsa(ws_expr, assign_expr)
     # If _tpsa_lower_expr didn't write directly into lhs (shouldn't happen when
     # lhs_sym is passed, but guard just in case):
     if result !== lhs_sym
-        push!(stmts, :(copy!($lhs_sym, $result)))
+        push!(stmts, :(_tpsa_assign!($lhs_sym, $result)))
         if is_borrow
-            push!(stmts, :(release!($ws_sym, $result)))
+            push!(stmts, :(_tpsa_release!($ws_sym, $result)))
             push!(stmts, :($(temporaries[result]) = false))
         end
     end
@@ -330,7 +356,7 @@ macro tpsa(ws_expr, assign_expr)
     # still owned by this invocation, including after a failed borrow or call.
     initializers = [:(local $live = false) for live in values(temporaries)]
     declarations = [:(local $temp) for temp in keys(temporaries)]
-    cleanup = [:($live && release!($ws_sym, $temp)) for (temp, live) in temporaries]
+    cleanup = [:($live && _tpsa_release!($ws_sym, $temp)) for (temp, live) in temporaries]
     return quote
         local $ws_sym = $(esc(ws_expr))
         $(declarations...)
