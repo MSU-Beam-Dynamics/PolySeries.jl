@@ -71,6 +71,7 @@ function descriptor_footprint_bytes(nv::Int, order::Int, N::Int, Nd::Vector{Int}
         sched_entries += Float64(Nd[di + 1]) * Float64(Nd[dj + 1])
     end
     return 4 * sched_entries +                    # MulSchedule2D k_local (Int32)
+           sizeof(Int) * (order + 1) +           # degree-row schedule offsets
            Float64(N) * (nv + 1) +                # PolyMap exponent table (UInt8)
            Float64(N) * 40 +                      # exp_to_idx Dict and CompPlan
            Float64(N) * 8 * CTPS_POOL_SIZE        # one thread's Float64 pool
@@ -115,6 +116,7 @@ mutable struct PSDesc
     const polymap::PolyMap              # index mapping (index → exponent)
     const exp_to_idx::Dict              # reverse map: SVector{nv+1,UInt8} → Int (concrete per instance)
     const mul::Vector{MulSchedule2D}    # 2D k-map multiplication schedules indexed as (di,dj)
+    const mul_offsets::Vector{Int}     # first schedule for each di; dj is the offset
     const comp_plan::CompPlan           # composition build plan
     const _pools::Vector{DescPool}      # per-thread coefficient buffer pools (Float64 only)
 end
@@ -257,9 +259,11 @@ function PSDesc(nv::Int, order::Int)
         # Symmetric schedule: only build (di ≥ dj) pairs with dk ≤ order.
         # mul! dispatches to diagonal/symmetric/asymmetric kernels at runtime,
         # combining the (di,dj) and (dj,di) contributions in one pass.
-        # Schedule size: (order+1)(order+2)/2 valid pairs ≈ half of full square.
+        # Each di row contains dj=0:min(di, order-di), in ascending order.
         mul = MulSchedule2D[]
+        mul_offsets = Vector{Int}(undef, order + 1)
         for di in 0:order
+            mul_offsets[di + 1] = length(mul) + 1
             for dj in 0:min(di, order - di)   # dj ≤ di  AND  dk = di+dj ≤ order
                 sched = build_mul_schedule_2d(polymap, exp_to_idx, nv, di, dj, off, Nd)
                 push!(mul, sched)
@@ -273,7 +277,7 @@ function PSDesc(nv::Int, order::Int)
         pools = [DescPool(N) for _ in 1:Threads.nthreads()]
 
         entries = @atomic :acquire DESCRIPTOR_REGISTRY.entries
-        desc = PSDesc(length(entries) + 1, nv, order, N, Nd, off, polymap, exp_to_idx, mul, comp_plan, pools)
+        desc = PSDesc(length(entries) + 1, nv, order, N, Nd, off, polymap, exp_to_idx, mul, mul_offsets, comp_plan, pools)
         _init_desc_pools!(pools, desc)   # phase-2: populate CTPS wrappers now that desc exists
         @atomic :release DESCRIPTOR_REGISTRY.entries = [entries; desc]
         DESC_CACHE[key] = desc
@@ -1354,6 +1358,48 @@ end
     return nothing
 end
 
+# Sparse traversal keeps the descriptor's ascending (di,dj) order, so the
+# arithmetic accumulates in exactly the same order as the dense traversal.
+struct ActiveMulSchedules
+    desc::PSDesc
+    mask1::UInt64
+    mask2::UInt64
+end
+
+# Equal masks covering degrees 0:k select a contiguous prefix of the table.
+# Iterate it directly, without a view allocation or per-pair bit operations.
+struct PrefixMulSchedules
+    schedules::Vector{MulSchedule2D}
+    stop::Int
+end
+Base.eltype(::Type{PrefixMulSchedules}) = MulSchedule2D
+Base.length(it::PrefixMulSchedules) = it.stop
+@inline function Base.iterate(it::PrefixMulSchedules, index::Int=1)
+    index > it.stop && return nothing
+    @inbounds return it.schedules[index], index + 1
+end
+Base.IteratorSize(::Type{ActiveMulSchedules}) = Base.SizeUnknown()
+Base.eltype(::Type{ActiveMulSchedules}) = MulSchedule2D
+
+@inline function Base.iterate(it::ActiveMulSchedules,
+                             state=(it.mask1 | it.mask2, UInt64(0), 0))
+    remaining_di, remaining_dj, di = state
+    while remaining_dj == 0
+        remaining_di == 0 && return nothing
+        di = trailing_zeros(remaining_di)
+        remaining_di &= remaining_di - UInt64(1)
+        # Include either orientation, but visit the symmetric schedule once.
+        partners = ((it.mask1 >> di) & 1 != 0 ? it.mask2 : UInt64(0)) |
+                   ((it.mask2 >> di) & 1 != 0 ? it.mask1 : UInt64(0))
+        limit = min(di, it.desc.order - di)
+        remaining_dj = partners & (typemax(UInt64) >> (63 - limit))
+    end
+    dj = trailing_zeros(remaining_dj)
+    remaining_dj &= remaining_dj - UInt64(1)
+    @inbounds sched = it.desc.mul[it.desc.mul_offsets[di + 1] + dj]
+    return sched, (remaining_di, remaining_dj, di)
+end
+
 # In-place multiplication: result = ctps1 * ctps2
 #
 # Symmetric schedule kernel — desc.mul contains only (di ≥ dj) entries.
@@ -1424,79 +1470,103 @@ function mul!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
             cr[i] = zero(T)
         end
 
-        @inbounds for sched in desc.mul
-            # desc.mul only contains (di ≥ dj) entries — no empty sentinels.
-            di = UInt32(sched.di)
-            dj = UInt32(sched.dj)
-            has_fwd = (mask1 >> di) & UInt64(1) != 0 && (mask2 >> dj) & UInt64(1) != 0
-            has_rev = (di != dj) &&
-                      (mask1 >> dj) & UInt64(1) != 0 && (mask2 >> di) & UInt64(1) != 0
-            (!has_fwd && !has_rev) && continue
-
-            Ni     = Int(sched.Ni)
-            Nj     = Int(sched.Nj)
-            i_base = Int(sched.i_start) - 1   # 0-based → c[i_base + i_local]
-            j_base = Int(sched.j_start) - 1   # 0-based → c[j_base + j_local]
-            k_mat  = sched.k_local             # Matrix{Int32}(Nj × Ni), 1-based absolute
-
-            if di == dj
-                # ── Diagonal: triangular loop ──────────────────────────────
-                # Handles c1[di]*c2[di] without any double-counting.
-                # Off-diagonal (j < i): combines (i,j) and (j,i) contributions.
-                @inbounds @fastmath for i_local in 1:Ni
-                    ai = c1[i_base + i_local]
-                    bi = c2[i_base + i_local]
-                    (_prunable_zero(ai) && _prunable_zero(bi)) && continue
-                    @inbounds @fastmath for j_local in 1:i_local-1
-                        kk = k_mat[j_local, i_local]
-                        cr[kk] += ai * c2[j_base + j_local] +
-                                  c1[j_base + j_local] * bi
-                    end
-                    # Self-product (j == i): no symmetry factor
-                    cr[k_mat[i_local, i_local]] += ai * bi
-                end
-
-            elseif has_fwd && has_rev
-                # ── Symmetric: one pass for both (di,dj) and (dj,di) ───────
-                # cr[k] += c1[di][i]*c2[dj][j] + c1[dj][j]*c2[di][i]
-                @inbounds @fastmath for i_local in 1:Ni
-                    ai = c1[i_base + i_local]   # c1 in di-block
-                    bi = c2[i_base + i_local]   # c2 in di-block
-                    (_prunable_zero(ai) && _prunable_zero(bi)) && continue
-                    @inbounds @fastmath for j_local in 1:Nj
-                        kk = k_mat[j_local, i_local]
-                        cr[kk] += ai * c2[j_base + j_local] +
-                                  c1[j_base + j_local] * bi
-                    end
-                end
-
-            elseif has_fwd
-                # ── Forward only: c1[di] * c2[dj] ──────────────────────────
-                @inbounds @fastmath for i_local in 1:Ni
-                    ai = c1[i_base + i_local]
-                    _prunable_zero(ai) && continue
-                    @inbounds @fastmath for j_local in 1:Nj
-                        cr[k_mat[j_local, i_local]] +=
-                            ai * c2[j_base + j_local]
-                    end
-                end
-
-            else  # has_rev only
-                # ── Reverse only: c1[dj] * c2[di] ──────────────────────────
-                @inbounds @fastmath for i_local in 1:Ni
-                    bi = c2[i_base + i_local]   # c2 in di-block
-                    _prunable_zero(bi) && continue
-                    @inbounds @fastmath for j_local in 1:Nj
-                        cr[k_mat[j_local, i_local]] +=
-                            c1[j_base + j_local] * bi
-                    end
-                end
-            end
+        # `Val(true)` asserts that every visited schedule is active in both
+        # orientations, so the kernel may skip its per-schedule mask tests.
+        # That holds for the whole table when both masks are full (which
+        # _ad_input guarantees during Enzyme AD) and for a prefix of the table
+        # when both masks are the same contiguous run of degrees from zero.
+        full_mask = typemax(UInt64) >> (63 - order)
+        if within_autodiff() || (mask1 == full_mask && mask2 == full_mask)
+            _mul_schedules!(cr, c1, c2, mask1, mask2, desc.mul, Val(true))
+        elseif mask1 == mask2 && (mask1 & (mask1 + UInt64(1))) == 0
+            last_degree = 63 - leading_zeros(mask1)
+            stop = desc.mul_offsets[last_degree + 1] + min(last_degree, order - last_degree)
+            _mul_schedules!(cr, c1, c2, mask1, mask2, PrefixMulSchedules(desc.mul, stop), Val(true))
+        else
+            _mul_schedules!(cr, c1, c2, mask1, mask2,
+                            ActiveMulSchedules(desc, mask1, mask2), Val(false))
         end
     end
 
     result.degree_mask[] = compose_degree_mask(mask1, mask2, order)
     return result
+end
+
+# `dense == true` promises that every schedule yielded by `schedules` is active
+# in both orientations (see the dispatcher in mul!); the caller owns that
+# promise. Outside AD a broken promise would read uninitialized storage.
+function _mul_schedules!(cr::Vector{T}, c1::Vector{T}, c2::Vector{T},
+                         mask1::UInt64, mask2::UInt64, schedules,
+                         ::Val{dense}) where {T, dense}
+    @inbounds for sched in schedules
+        # desc.mul only contains (di ≥ dj) entries — no empty sentinels.
+        di = UInt32(sched.di)
+        dj = UInt32(sched.dj)
+        has_fwd = dense || ((mask1 >> di) & UInt64(1) != 0 && (mask2 >> dj) & UInt64(1) != 0)
+        has_rev = (di != dj) &&
+                  (dense || ((mask1 >> dj) & UInt64(1) != 0 && (mask2 >> di) & UInt64(1) != 0))
+
+        Ni     = Int(sched.Ni)
+        Nj     = Int(sched.Nj)
+        i_base = Int(sched.i_start) - 1   # 0-based → c[i_base + i_local]
+        j_base = Int(sched.j_start) - 1   # 0-based → c[j_base + j_local]
+        k_mat  = sched.k_local             # Matrix{Int32}(Nj × Ni), 1-based absolute
+
+        if di == dj
+            # ── Diagonal: triangular loop ──────────────────────────────
+            # Handles c1[di]*c2[di] without any double-counting.
+            # Off-diagonal (j < i): combines (i,j) and (j,i) contributions.
+            @inbounds @fastmath for i_local in 1:Ni
+                ai = c1[i_base + i_local]
+                bi = c2[i_base + i_local]
+                (_prunable_zero(ai) && _prunable_zero(bi)) && continue
+                @inbounds @fastmath for j_local in 1:i_local-1
+                    kk = k_mat[j_local, i_local]
+                    cr[kk] += ai * c2[j_base + j_local] +
+                              c1[j_base + j_local] * bi
+                end
+                # Self-product (j == i): no symmetry factor
+                cr[k_mat[i_local, i_local]] += ai * bi
+            end
+
+        elseif has_fwd && has_rev
+            # ── Symmetric: one pass for both (di,dj) and (dj,di) ───────
+            # cr[k] += c1[di][i]*c2[dj][j] + c1[dj][j]*c2[di][i]
+            @inbounds @fastmath for i_local in 1:Ni
+                ai = c1[i_base + i_local]   # c1 in di-block
+                bi = c2[i_base + i_local]   # c2 in di-block
+                (_prunable_zero(ai) && _prunable_zero(bi)) && continue
+                @inbounds @fastmath for j_local in 1:Nj
+                    kk = k_mat[j_local, i_local]
+                    cr[kk] += ai * c2[j_base + j_local] +
+                              c1[j_base + j_local] * bi
+                end
+            end
+
+        elseif has_fwd
+            # ── Forward only: c1[di] * c2[dj] ──────────────────────────
+            @inbounds @fastmath for i_local in 1:Ni
+                ai = c1[i_base + i_local]
+                _prunable_zero(ai) && continue
+                @inbounds @fastmath for j_local in 1:Nj
+                    cr[k_mat[j_local, i_local]] +=
+                        ai * c2[j_base + j_local]
+                end
+            end
+
+        else  # has_rev only
+            # ── Reverse only: c1[dj] * c2[di] ──────────────────────────
+            @inbounds @fastmath for i_local in 1:Ni
+                bi = c2[i_base + i_local]   # c2 in di-block
+                _prunable_zero(bi) && continue
+                @inbounds @fastmath for j_local in 1:Nj
+                    cr[k_mat[j_local, i_local]] +=
+                        c1[j_base + j_local] * bi
+                end
+            end
+        end
+    end
+    return nothing
 end
 
 # ── CTPS Composition ─────────────────────────────────────────────────────────

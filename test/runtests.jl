@@ -12,6 +12,7 @@ using PolySeries
 
     @testset "Multiplication" begin
         include("multiplication_tests.jl")
+        include("active_mul_schedule_tests.jl")
     end
 
     @testset "Multiplication Reference" begin

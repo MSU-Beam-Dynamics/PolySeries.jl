@@ -92,6 +92,12 @@ that never loads Enzyme, for a strict measurement of the non-AD path.
 
 ## Running Benchmarks
 
+`benchmark_active_mul_schedules.jl` measures multiplication with sparse,
+separated, and dense degree masks, including order 63. It reports eligible
+schedule counts, warmed median time, and allocations. Run it with
+`julia --project=benchmarks benchmarks/benchmark_active_mul_schedules.jl`.
+Degree-0/1 inputs at order 12 select 3 of the descriptor's 49 schedules.
+
 **Prerequisites:**
 ```julia
 using Pkg

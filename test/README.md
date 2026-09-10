@@ -27,6 +27,7 @@ include("test/polymap_tests.jl")
 - **polymap_tests.jl**: Tests for polynomial index mapping (`PolyMap`, `decomposite`, etc.)
 - **index_tests.jl**: Tests for index correctness in multiplication operations
 - **multiplication_tests.jl**: Tests for multiplication correctness (basic, sparse, dense, complex)
+- **active_mul_schedule_tests.jl**: Exhaustive degree-mask schedule selection, truncation, symmetric-pair deduplication, and degree-63 boundaries
 - **mul_reference_tests.jl**: `mul!`, `*`, `pow!` and `^` against an independent exponent-convolution reference over random sparsity patterns, all aliasing forms, Float64/Float32/ComplexF64
 - **type_stability_tests.jl**: Tests for type stability and concrete types
 - **threadsafe_tests.jl**: Tests for thread safety and descriptor caching
