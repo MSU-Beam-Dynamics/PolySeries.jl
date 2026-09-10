@@ -386,7 +386,7 @@ function run_mathfunc(configs, fns)
         fn_bang = getfield(PolySeries, Symbol(fn, "!"))
 
         t_alloc = timed(() -> fn(x); label="$fn alloc $density nv=$nv order=$order")
-        t_inpl  = timed(() -> fn_bang(out, x); label="$fn! $density nv=$nv order=$order")
+        t_inpl  = timed(() -> fn_bang(out, x); label="$(fn)! $density nv=$nv order=$order")
 
         t_gtpsa = try
             d  = GTPSA.Descriptor(nv, order)
