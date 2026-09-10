@@ -1,13 +1,25 @@
 using Test
 
-function run_example_script(path::AbstractString, project::AbstractString)
-    output = IOBuffer()
-    # `--compiled-modules=existing` (Julia ≥ 1.11) avoids recompiling the package
-    # in every child process; older releases simply skip the flag.
-    flags = VERSION >= v"1.11" ? ["--compiled-modules=existing"] : String[]
-    command = `$(Base.julia_cmd()) --startup-file=no $flags --project=$project $path`
-    process = run(pipeline(ignorestatus(command), stdout=output, stderr=output))
-    return success(process), String(take!(output))
+# Each example runs in-process inside its own anonymous module, with output
+# captured to a temporary file that is printed only on failure. This avoids a
+# fresh Julia process (and a fresh compile of PolySeries and Enzyme) per script.
+# The scripts are plain top-level code that only uses PolySeries and standard
+# libraries, so module isolation is sufficient.
+function run_example_inprocess(path::AbstractString; label=basename(path))
+    sandbox = Module(Symbol("Example_", replace(label, r"[^A-Za-z0-9]" => "_")))
+    log = tempname()
+    try
+        redirect_stdio(stdout=log, stderr=log) do
+            Base.include(sandbox, path)
+        end
+        return true
+    catch err
+        println("--- example $label failed: ", sprint(showerror, err))
+        isfile(log) && print(read(log, String))
+        return false
+    finally
+        isfile(log) && rm(log; force=true)
+    end
 end
 
 @testset "README executable blocks" begin
@@ -26,11 +38,7 @@ end
             @testset "block $index" begin
                 script = joinpath(sandbox, "readme_example_$index.jl")
                 write(script, code)
-                # Pkg.test supplies a resolved temporary environment even in
-                # a clean checkout without a root Manifest.toml.
-                passed, output = run_example_script(script, dirname(Base.active_project()))
-                passed || println(output)
-                @test passed
+                @test run_example_inprocess(script; label="README block $index")
             end
         end
     end
@@ -47,12 +55,9 @@ end
         filter!(path -> basename(path) != "07_enzyme_ad.jl", scripts)
     end
 
-    project = dirname(Base.active_project())
     for script in scripts
         @testset "$(basename(script))" begin
-            passed, output = run_example_script(script, project)
-            passed || println(output)
-            @test passed
+            @test run_example_inprocess(script)
         end
     end
 end

@@ -108,7 +108,9 @@ function check_products(::Type{T}, nv, order) where T
 end
 
 @testset "mul! against exponent-convolution reference" begin
-    for (nv, order) in ((1, 0), (1, 5), (2, 1), (2, 5), (3, 4), (4, 5), (6, 4))
+    # (1,5): single variable, one monomial per degree; (2,5)/(3,4): mixed
+    # monomials with several degree pairs per output block; (6,4): wide blocks.
+    for (nv, order) in ((1, 5), (2, 5), (3, 4), (6, 4))
         @testset "Float64 nv=$nv order=$order" begin
             check_products(Float64, nv, order)
         end

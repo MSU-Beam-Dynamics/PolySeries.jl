@@ -40,7 +40,9 @@ end
     # Exhaust every mask and pair of masks, including empty, contiguous,
     # alternating, interleaved and overlapping degree runs. nv=2 additionally
     # checks that each active degree is processed as a whole coefficient block.
-    for nv in (1, 2), poison in (NaN, 123456.0)
+    # NaN is the only poison worth using: a finite garbage value multiplied by
+    # a zero coefficient would vanish, NaN propagates into the result.
+    for nv in (1, 2), poison in (NaN,)
         desc = set_descriptor!(nv, 3)
         for ma in UInt64(0):UInt64(15)
             a, av = masked_fixture(desc, ma, 2.0; poison)
@@ -137,7 +139,7 @@ end
     # Same exhaustive mask sweep as the elementwise kernels, now for mul! and
     # pow!: every (ma, mb) pair, every aliasing pattern, poisoned gaps. The
     # fixture values are small integers, so products and sums are exact.
-    for nv in (1, 2), poison in (NaN, 123456.0)
+    for nv in (1, 2), poison in (NaN,)
         desc = set_descriptor!(nv, 3)
         probe = CTPS(Float64)
         for ma in UInt64(0):UInt64(15)

@@ -30,7 +30,7 @@ include("test/polymap_tests.jl")
 - **mul_reference_tests.jl**: `mul!`, `*`, `pow!` and `^` against an independent exponent-convolution reference over random sparsity patterns, all aliasing forms, Float64/Float32/ComplexF64
 - **type_stability_tests.jl**: Tests for type stability and concrete types
 - **threadsafe_tests.jl**: Tests for thread safety and descriptor caching
-- **documentation_examples_tests.jl**: Extracts executable README blocks into temporary scripts and runs every standalone example in a fresh Julia process
+- **documentation_examples_tests.jl**: Extracts executable README blocks and runs them and every `examples/*.jl` script in-process, each in its own module with captured output (runs last so the Enzyme example reuses the compiled extension)
 - **degree_mask_tests.jl**, **arithmetic_tests.jl**: Sparse degree gaps and poisoned inactive storage
 - **order_limits_tests.jl**, **math_alias_tests.jl**, **log_pool_tests.jl**: Representation limits, aliasing, and pool cleanup on failure
 - **enzyme_alias_tests.jl**: Forward/reverse AD through aliased in-place math (included from `ext_enzyme_test.jl`, as are the other `enzyme_*` files and `repro_prebuilt_zero_ad.jl`)

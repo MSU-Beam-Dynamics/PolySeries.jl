@@ -34,10 +34,6 @@ using PolySeries
         include("complex_branch_tests.jl")
     end
 
-    @testset "Documentation Examples" begin
-        include("documentation_examples_tests.jl")
-    end
-
     @testset "Math Aliasing" begin
         include("math_alias_tests.jl")
     end
@@ -78,5 +74,10 @@ using PolySeries
         # Enzyme is a required test extra. Import/compiler failures must fail
         # the suite rather than silently skip differentiation regressions.
         include("ext_enzyme_test.jl")
+    end
+
+    # Last: the Enzyme example reuses the rules compiled by the extension tests.
+    @testset "Documentation Examples" begin
+        include("documentation_examples_tests.jl")
     end
 end
