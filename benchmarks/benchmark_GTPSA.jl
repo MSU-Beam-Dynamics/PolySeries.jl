@@ -36,6 +36,23 @@ using PolySeries
 using GTPSA
 
 const QUICK  = "--quick" in ARGS
+
+# Sections to run, e.g. --only=compose,math. Default: all four.
+const ONLY = let arg = findfirst(a -> startswith(a, "--only="), ARGS)
+    arg === nothing ? nothing : Set(split(ARGS[arg][8:end], ','))
+end
+wanted(section) = ONLY === nothing || section in ONLY
+
+# Skipped measurements are collected here and written out at the end, so a
+# failure is visible after the fact and not only in the console scrollback.
+const SKIPS = String[]
+
+function note_skip(label, err)
+    message = "$label: $(sprint(showerror, err))"
+    push!(SKIPS, message)
+    printstyled("    [skipped] ", message, "\n"; color=:yellow)
+    return NaN
+end
 const BUDGET = QUICK ? 0.4 : 2.0          # seconds of sampling per measurement
 
 # ── provenance ───────────────────────────────────────────────────────────────
@@ -96,8 +113,7 @@ function timed(run!; reset!::Union{Nothing,Function}=nothing,
         reset! === nothing || reset!()
         run!()
     catch err
-        printstyled("    [skipped] ", label, ": ", sprint(showerror, err), "\n"; color=:yellow)
-        return NaN
+        return note_skip(label, err)
     end
 
     evals = 1
@@ -300,9 +316,7 @@ function run_henon(configs, iterations)
             timed(() -> henon_iterate(xg, c, s, iterations);
                   label="henon GTPSA nv=$nv order=$order")
         catch err
-            printstyled("    [skipped] GTPSA nv=$nv order=$order: ",
-                        sprint(showerror, err), "\n"; color=:yellow)
-            NaN
+            note_skip("henon GTPSA nv=$nv order=$order", err)
         end
 
         @printf("%-16s %10d %12.3e %12.3e %12.3e %9.2f %9.2f %8.2f\n",
@@ -347,9 +361,7 @@ function run_multiplication(configs)
             bg = density == "dense" ? dense_operand(vg, order) * 1.5 : 1.0 + vg[min(2, nv)]
             timed(() -> ag * bg; label="mul GTPSA $density nv=$nv order=$order")
         catch err
-            printstyled("    [skipped] GTPSA mul $density nv=$nv: ",
-                        sprint(showerror, err), "\n"; color=:yellow)
-            NaN
+            note_skip("GTPSA mul $density nv=$nv order=$order", err)
         end
 
         @printf("%-16s %8s %8d %12.3e %12.3e %12.3e %9.2f %9.2f\n",
@@ -394,9 +406,7 @@ function run_mathfunc(configs, fns)
             xg = density == "dense" ? dense_operand(vg, order) : sparse_operand(vg)
             timed(() -> fn(xg); label="$fn GTPSA $density nv=$nv order=$order")
         catch err
-            printstyled("    [skipped] GTPSA $fn $density nv=$nv: ",
-                        sprint(showerror, err), "\n"; color=:yellow)
-            NaN
+            note_skip("GTPSA $fn $density nv=$nv order=$order", err)
         end
 
         @printf("%-6s %-16s %8s %8d %12.3e %12.3e %12.3e %9.2f %9.2f\n",
@@ -434,8 +444,12 @@ function run_composition(configs)
         out = CTPS(Float64, desc)
         ws  = CompositionWorkspace(desc)
 
-        t_alloc = timed(() -> compose(f, g); label="compose $density nv=$nv order=$order")
-        t_ws    = timed(() -> compose!(out, f, g, ws);
+        # Qualified: GTPSA exports `compose!` as well, so the bare name is
+        # ambiguous in this module. (`mul!` needs no qualification because both
+        # packages extend LinearAlgebra.mul!, i.e. one shared binding.)
+        t_alloc = timed(() -> PolySeries.compose(f, g);
+                        label="compose $density nv=$nv order=$order")
+        t_ws    = timed(() -> PolySeries.compose!(out, f, g, ws);
                         label="compose! $density nv=$nv order=$order")
 
         t_gtpsa = try
@@ -452,9 +466,7 @@ function run_composition(configs)
                 "does not implement ∘ for Vector{TPS}")
             timed(() -> outer ∘ gg; label="compose GTPSA $density nv=$nv order=$order")
         catch err
-            printstyled("    [skipped] GTPSA compose $density nv=$nv: ",
-                        sprint(showerror, err), "\n"; color=:yellow)
-            NaN
+            note_skip("GTPSA compose $density nv=$nv order=$order", err)
         end
 
         @printf("%-16s %8s %8d %12.3e %12.3e %12.3e %9.2f %9.2f\n",
@@ -491,12 +503,29 @@ function main()
         [(2, 6), (2, 12), (4, 6), (4, 8), (6, 4), (6, 6)]
     compose_configs = QUICK ? [(3, 4)] : [(3, 6), (4, 6), (6, 8)]
 
-    run_henon(henon_configs, 10)
-    run_multiplication(kernel_configs)
-    run_mathfunc(math_configs, (exp, log, sqrt, sin, cos))
-    run_composition(compose_configs)
+    wanted("henon")   && run_henon(henon_configs, 10)
+    wanted("mul")     && run_multiplication(kernel_configs)
+    wanted("math")    && run_mathfunc(math_configs, (exp, log, sqrt, sin, cos))
+    wanted("compose") && run_composition(compose_configs)
 
-    println("\nDone.")
+    log = joinpath(@__DIR__, "benchmark_skips.log")
+    open(log, "w") do io
+        for line in PROVENANCE
+            println(io, "# ", line)
+        end
+        if isempty(SKIPS)
+            println(io, "no skipped measurements")
+        else
+            for message in SKIPS
+                println(io, message)
+            end
+        end
+    end
+    if isempty(SKIPS)
+        println("\nDone — no skipped measurements.")
+    else
+        printstyled("\nDone — $(length(SKIPS)) skipped measurement(s), see $log\n"; color=:yellow)
+    end
 end
 
 main()

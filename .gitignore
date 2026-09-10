@@ -31,3 +31,6 @@ JuliaLocalPreferences.toml
 dev_scripts/
 agent/
 Manifest.toml
+
+# Benchmark skip log, regenerated on every run.
+benchmarks/benchmark_skips.log

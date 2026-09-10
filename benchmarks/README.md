@@ -57,7 +57,15 @@ Three properties matter when interpreting the output:
 
 Times are the minimum over a sampling budget (2 s per measurement, 0.4 s under
 `--quick`). Any operation that a given GTPSA version does not support is
-reported as `NaN` with a note rather than aborting the run.
+reported as `NaN` rather than aborting the run, and every skip is written to
+`benchmark_skips.log` with its error message. `--only=compose,math` re-runs a
+subset of the sections.
+
+PolySeries composition is called as `PolySeries.compose` / `PolySeries.compose!`
+in this script: GTPSA exports `compose!` too, so under `using PolySeries, GTPSA`
+the bare name is ambiguous and throws. `mul!` needs no such qualification
+because both packages extend `LinearAlgebra.mul!` — one shared binding rather
+than two competing exports.
 
 ### benchmark_composition.jl
 Compares retained images, ordinary depth-first evaluation, and a reusable

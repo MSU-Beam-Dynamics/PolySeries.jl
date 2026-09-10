@@ -1,0 +1,15 @@
+# date=2026-09-09T23:28:55
+# julia=1.12.7
+# machine=arm64-apple-darwin25.5.0
+# cpu=apple-m3
+# threads=1
+# polyseries=0.1.0
+# gtpsa=1.5.3
+# budget_seconds=2.0
+vars,order,N,source,polyseries_compose_s,polyseries_workspace_s,gtpsa_s,ratio_compose,ratio_workspace
+3,6,84,sparse,NaN,NaN,6.46533e-07,NaN,NaN
+3,6,84,dense,NaN,NaN,8.12762e-06,NaN,NaN
+4,6,210,sparse,NaN,NaN,8.80502e-07,NaN,NaN
+4,6,210,dense,NaN,NaN,3.16867e-05,NaN,NaN
+6,8,3003,sparse,NaN,NaN,5.73904e-06,NaN,NaN
+6,8,3003,dense,NaN,NaN,0.00354113,NaN,NaN
