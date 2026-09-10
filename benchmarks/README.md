@@ -22,6 +22,43 @@ Benchmarks mathematical functions:
 ### benchmark_multiplication.jl
 Detailed multiplication performance analysis across different problem sizes.
 
+### benchmark_GTPSA.jl
+The head-to-head comparison with [GTPSA.jl](https://github.com/bmad-sim/GTPSA.jl).
+Requires the `benchmarks` environment, which pins GTPSA:
+
+```bash
+julia --project=benchmarks benchmarks/benchmark_GTPSA.jl          # full run
+julia --project=benchmarks benchmarks/benchmark_GTPSA.jl --quick  # short budget
+```
+
+Four sections, each writing its own CSV: a composed Henon map
+(`benchmark_results.csv`), multiplication (`benchmark_mul_results.csv`), the
+math functions (`benchmark_mathfunc_results.csv`) and composition
+(`benchmark_compose_gtpsa_results.csv`). Every ratio is GTPSA divided by
+PolySeries, so a value above 1.0 means PolySeries is faster. Each CSV opens
+with `#` provenance lines recording the date, machine, Julia version and both
+package versions; read them with `comment="#"` (CSV.jl) or `comment='#'`
+(pandas).
+
+Three properties matter when interpreting the output:
+
+- **The Henon map genuinely composes.** Each iteration substitutes the previous
+  result, so the state densifies just as it does in real map tracking, and the
+  reported `active_degree_fraction` column shows how far it got. A map that
+  restarts from linear variables every step never leaves the sparse
+  degree-0..2 corner and flatters any implementation that skips inactive
+  degrees.
+- **Sparse and dense operands are reported separately.** Sparse inputs favour
+  active-degree tracking; dense inputs are the worst case. Quoting one number
+  without saying which regime produced it is misleading.
+- **Nothing a caller would hoist is inside a timed region.** Rotation constants
+  are precomputed and the in-place paths reuse a `PSWorkspace`, so the
+  measurement is of the kernels rather than of scratch allocation.
+
+Times are the minimum over a sampling budget (2 s per measurement, 0.4 s under
+`--quick`). Any operation that a given GTPSA version does not support is
+reported as `NaN` with a note rather than aborting the run.
+
 ### benchmark_composition.jl
 Compares retained images, ordinary depth-first evaluation, and a reusable
 `CompositionWorkspace` for dense and sparse sources with identity and shifted
@@ -81,16 +118,10 @@ For accurate benchmarks:
 3. Warm up the JIT compiler (BenchmarkTools does this automatically)
 4. Use `@benchmark` from BenchmarkTools for reliable statistics
 
-## Development Benchmarks
-
-Historical and development-related benchmarks have been moved to `../dev_scripts/`:
-- GTPSA comparison benchmarks
-- Internal implementation benchmarks
-- Allocation profiling scripts
-- Three-way comparison tests
-
 ## Notes
 
-- All benchmarks use the simplified API with `set_descriptor!()`
-- BenchmarkTools automatically handles warm-up and statistical analysis
-- Results may vary by hardware and Julia version
+- `benchmark_GTPSA.jl` needs the `benchmarks` environment (it depends on GTPSA
+  and BenchmarkTools); the other scripts run under the package environment.
+- Results may vary by hardware and Julia version, which is why the CSVs carry
+  provenance headers. Re-run a benchmark before quoting it against code that
+  has changed since the recorded date.
