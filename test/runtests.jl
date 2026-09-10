@@ -1,7 +1,9 @@
 using Test
 using PolySeries
 
-@testset "PolySeries.jl" begin
+# verbose: print every top-level testset with its own timing, so a slow section
+# (Enzyme compilation, the example scripts) is visible without a failure.
+@testset verbose = true "PolySeries.jl" begin
     @testset "PolyMap" begin
         include("polymap_tests.jl")
     end

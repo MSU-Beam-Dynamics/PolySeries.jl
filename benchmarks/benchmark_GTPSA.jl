@@ -508,8 +508,10 @@ function main()
     wanted("math")    && run_mathfunc(math_configs, (exp, log, sqrt, sin, cos))
     wanted("compose") && run_composition(compose_configs)
 
-    log = joinpath(@__DIR__, "benchmark_skips.log")
-    open(log, "w") do io
+    # Not `log`: an assignment to that name would shadow Base.log for the whole
+    # function body, including the tuple of functions passed to run_mathfunc.
+    skip_log = joinpath(@__DIR__, "benchmark_skips.log")
+    open(skip_log, "w") do io
         for line in PROVENANCE
             println(io, "# ", line)
         end
@@ -524,7 +526,7 @@ function main()
     if isempty(SKIPS)
         println("\nDone — no skipped measurements.")
     else
-        printstyled("\nDone — $(length(SKIPS)) skipped measurement(s), see $log\n"; color=:yellow)
+        printstyled("\nDone — $(length(SKIPS)) skipped measurement(s), see $skip_log\n"; color=:yellow)
     end
 end
 
