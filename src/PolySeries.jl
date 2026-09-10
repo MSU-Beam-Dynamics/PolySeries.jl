@@ -25,7 +25,7 @@ export add!, addto!, sub!, subfrom!, scale!, scaleadd!, copy!, zero!, mul!, comp
 export set_descriptor!, get_descriptor, clear_descriptor!
 export CompositionWorkspace
 export PSWorkspace, borrow!, release!, decomposite
-export sin!, cos!, exp!, log!, sqrt!, sinh!, cosh!, asin!, acos!, sincos!
+export sin!, cos!, exp!, log!, sqrt!, sinh!, cosh!, asin!, acos!, sincos!, tan!, inv!, div!
 export pow!
 include("macro.jl")
 export @tpsa

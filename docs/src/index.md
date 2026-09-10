@@ -114,11 +114,13 @@ in one expression is not supported.
 | `exp(f)` | `exp!(out, f)` | |
 | `log(f)` | `log!(out, f)` | positive real or nonzero complex constant |
 | `sqrt(f)` | `sqrt!(out, f)` | positive real or nonzero complex constant |
+| `inv(f)` | `inv!(out, f)` | nonzero constant |
+| `a / b` | `div!(out, a, b)` | nonzero constant in `b`; one recurrence, no intermediate inverse |
 | `pow(f, n)` | `pow!(out, f, n)` | integer `n`; in-place form requires `n ≥ 0` |
 | `sin(f)` | `sin!(out, f)` | |
 | `cos(f)` | `cos!(out, f)` | |
 | — | `sincos!(s, c, f)` | both series in one pass, for the cost of one |
-| `tan(f)` | — | |
+| `tan(f)` | `tan!(out, f)` | |
 | `asin(f)` | `asin!(out, f)` | real constant must have absolute value below 1; complex branch points ±1 are rejected |
 | `acos(f)` | `acos!(out, f)` | real constant must have absolute value below 1; complex branch points ±1 are rejected |
 | `sinh(f)` | `sinh!(out, f)` | |

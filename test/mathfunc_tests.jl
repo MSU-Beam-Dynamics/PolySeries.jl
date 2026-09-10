@@ -408,3 +408,73 @@ end
         @test r.degree_mask[] == UInt64(1) && cst(r) ≈ h(0.7)
     end
 end
+
+@testset "inv!, div!, tan! and the @tpsa extensions" begin
+    desc = PSDesc(2, 5)
+    x = CTPS(0.0, 1, desc); y = CTPS(0.0, 2, desc)
+    allc(p) = [element(p, [Int(desc.polymap.map[i, v]) for v in 2:3]) for i in 1:desc.N]
+    a = 1.5 + x + 0.5 * y^2
+    b = 2.0 - 0.3 * x * y + y
+    out = CTPS(Float64, desc)
+
+    @test allc(inv!(out, b)) ≈ allc(inv(b)) atol=1e-14
+    @test allc(inv(b) * b) ≈ allc(CTPS(1.0, desc)) atol=1e-14
+    @test allc(div!(out, a, b)) ≈ allc(a / b) atol=1e-14
+    @test allc((a / b) * b) ≈ allc(a) atol=1e-13
+    @test allc(a / b) ≈ allc(a * inv(b)) atol=1e-13
+    @test allc(3.0 / b) ≈ allc(3.0 * inv(b)) atol=1e-14
+    @test allc(tan!(out, a)) ≈ allc(tan(a)) atol=1e-13
+    @test allc(tan(a) * cos(a)) ≈ allc(sin(a)) atol=1e-13
+
+    # Aliasing: every argument position.
+    p = CTPS(b); inv!(p, p);          @test allc(p) ≈ allc(inv(b)) atol=1e-14
+    p = CTPS(a); div!(p, p, b);       @test allc(p) ≈ allc(a / b) atol=1e-14
+    p = CTPS(b); div!(p, a, p);       @test allc(p) ≈ allc(a / b) atol=1e-14
+    p = CTPS(b); div!(p, p, p);       @test allc(p) ≈ allc(CTPS(1.0, desc)) atol=1e-14
+    p = CTPS(a); tan!(p, p);          @test allc(p) ≈ allc(tan(a)) atol=1e-13
+    p = CTPS(a); sqrt!(p, p);         @test allc(p) ≈ allc(sqrt(a)) atol=1e-14
+    p = CTPS(a); log!(p, p);          @test allc(p) ≈ allc(log(a)) atol=1e-14
+    q = 0.2 + 0.4 * x - 0.1 * y
+    p = CTPS(q); asin!(p, p);         @test allc(p) ≈ allc(asin(q)) atol=1e-14
+    p = CTPS(q); acos!(p, p);         @test allc(p) ≈ allc(acos(q)) atol=1e-14
+
+    # Zero allocation for the whole in-place family.
+    for (f!, arg) in ((inv!, b), (tan!, a), (sqrt!, a), (log!, a), (asin!, q), (acos!, q))
+        f!(out, arg)
+        @test (@allocated f!(out, arg)) == 0
+    end
+    div!(out, a, b)
+    @test (@allocated div!(out, a, b)) == 0
+
+    # Domain errors happen before anything is written or borrowed.
+    pool = desc._pools[Threads.threadid()]
+    capacity = pool.sp
+    z = CTPS(0.0, 1, desc)
+    before = copy(out.c); mask = out.degree_mask[]
+    @test_throws DomainError inv!(out, z)
+    @test_throws DomainError div!(out, a, z)
+    @test out.c == before && out.degree_mask[] == mask
+    @test pool.sp == capacity
+
+    # @tpsa: division and the newly lowered unary calls, zero allocation.
+    ws = PSWorkspace(desc, 8)
+    r = CTPS(Float64, desc)
+    @tpsa ws r = a / b + tan(x) - asin(0.5 * x) + acos(0.5 * y) / 2.0
+    @test allc(r) ≈ allc(a / b + tan(x) - asin(0.5 * x) + acos(0.5 * y) / 2.0) atol=1e-13
+    @test ws.sp == length(ws.bufs)
+    @tpsa ws r = 2.0 / b
+    @test allc(r) ≈ allc(2.0 / b) atol=1e-14
+    tpsa_div_tan!(ws, r, a, b, x) = (@tpsa ws r = a / b + tan(x); r)
+    tpsa_div_tan!(ws, r, a, b, x)                 # compile outside the measurement
+    @test (@allocated tpsa_div_tan!(ws, r, a, b, x)) == 0
+    # Complex scalars reach the macro's scalar paths (no temporaries are needed
+    # here, so the Float64-only workspace is never borrowed from).
+    cdesc = PSDesc(1, 3)
+    cx = CTPS(0.0 + 0.0im, 1, cdesc)
+    cr = CTPS(ComplexF64, cdesc)
+    cws = PSWorkspace(cdesc, 4)
+    @tpsa cws cr = (1.0 + 2.0im) * cx
+    @test element(cr, [1]) == 1.0 + 2.0im
+    @tpsa cws cr = cx / (2.0im)
+    @test element(cr, [1]) == -0.5im
+end

@@ -11,9 +11,9 @@
 # The result is written directly into `lhs` with no heap allocation.
 #
 # Supported operations in `expr`:
-#   a + b, a - b, a * b, -a, a^n (integer)
-#   sin(a), cos(a), exp(a), log(a), sqrt(a), sinh(a), cosh(a)
-#   Scalar (Real) values may appear in +, -, * and supported unary calls.
+#   a + b, a - b, a * b, a / b, -a, a^n (integer)
+#   sin(a), cos(a), tan(a), exp(a), log(a), sqrt(a), sinh(a), cosh(a), asin(a), acos(a)
+#   Scalar (Number) values may appear in +, -, *, / and supported unary calls.
 #
 # The macro is NOT appropriate for:
 #   - Assignments where lhs appears on the rhs (self-referential expressions)
@@ -29,13 +29,13 @@
 @inline function _tpsa_add!(out::CTPS{T}, a::CTPS{T}, b::CTPS{T}) where T
     add!(out, a, b)
 end
-@inline function _tpsa_add!(out::CTPS{T}, a::CTPS{T}, b::Real) where T
+@inline function _tpsa_add!(out::CTPS{T}, a::CTPS{T}, b::Number) where T
     add!(out, a, T(b))
 end
-@inline function _tpsa_add!(out::CTPS{T}, a::Real, b::CTPS{T}) where T
+@inline function _tpsa_add!(out::CTPS{T}, a::Number, b::CTPS{T}) where T
     add!(out, b, T(a))
 end
-@inline function _tpsa_add!(out::CTPS{T}, a::Real, b::Real) where T
+@inline function _tpsa_add!(out::CTPS{T}, a::Number, b::Number) where T
     val = T(a) + T(b)
     _zero_active!(out)
     out.c[1] = val
@@ -45,10 +45,10 @@ end
 @inline function _tpsa_sub!(out::CTPS{T}, a::CTPS{T}, b::CTPS{T}) where T
     sub!(out, a, b)
 end
-@inline function _tpsa_sub!(out::CTPS{T}, a::CTPS{T}, b::Real) where T
+@inline function _tpsa_sub!(out::CTPS{T}, a::CTPS{T}, b::Number) where T
     add!(out, a, -T(b))
 end
-@inline function _tpsa_sub!(out::CTPS{T}, a::Real, b::CTPS{T}) where T
+@inline function _tpsa_sub!(out::CTPS{T}, a::Number, b::CTPS{T}) where T
     # a - b = -(b - a) = scale b by -1, then add scalar a
     scale!(out, b, T(-1))
     m  = out.degree_mask[]
@@ -56,7 +56,7 @@ end
     out.c[1] = c0 + T(a)
     out.degree_mask[] = (m & ~UInt64(1)) | (_prunable_zero(out.c[1]) ? UInt64(0) : UInt64(1))
 end
-@inline function _tpsa_sub!(out::CTPS{T}, a::Real, b::Real) where T
+@inline function _tpsa_sub!(out::CTPS{T}, a::Number, b::Number) where T
     val = T(a) - T(b)
     _zero_active!(out)
     out.c[1] = val
@@ -66,14 +66,31 @@ end
 @inline function _tpsa_mul!(out::CTPS{T}, a::CTPS{T}, b::CTPS{T}) where T
     mul!(out, a, b)
 end
-@inline function _tpsa_mul!(out::CTPS{T}, a::CTPS{T}, b::Real) where T
+@inline function _tpsa_mul!(out::CTPS{T}, a::CTPS{T}, b::Number) where T
     scale!(out, a, T(b))
 end
-@inline function _tpsa_mul!(out::CTPS{T}, a::Real, b::CTPS{T}) where T
+@inline function _tpsa_mul!(out::CTPS{T}, a::Number, b::CTPS{T}) where T
     scale!(out, b, T(a))
 end
-@inline function _tpsa_mul!(out::CTPS{T}, a::Real, b::Real) where T
+@inline function _tpsa_mul!(out::CTPS{T}, a::Number, b::Number) where T
     val = T(a) * T(b)
+    _zero_active!(out)
+    out.c[1] = val
+    out.degree_mask[] = _prunable_zero(val) ? UInt64(0) : UInt64(1)
+end
+
+@inline function _tpsa_div!(out::CTPS{T}, a::CTPS{T}, b::CTPS{T}) where T
+    div!(out, a, b)
+end
+@inline function _tpsa_div!(out::CTPS{T}, a::CTPS{T}, b::Number) where T
+    scale!(out, a, one(T) / T(b))
+end
+@inline function _tpsa_div!(out::CTPS{T}, a::Number, b::CTPS{T}) where T
+    inv!(out, b)
+    scale!(out, T(a))
+end
+@inline function _tpsa_div!(out::CTPS{T}, a::Number, b::Number) where T
+    val = T(a) / T(b)
     _zero_active!(out)
     out.c[1] = val
     out.degree_mask[] = _prunable_zero(val) ? UInt64(0) : UInt64(1)
@@ -82,7 +99,7 @@ end
 @inline function _tpsa_neg!(out::CTPS{T}, a::CTPS{T}) where T
     scale!(out, a, T(-1))
 end
-@inline function _tpsa_neg!(out::CTPS{T}, a::Real) where T
+@inline function _tpsa_neg!(out::CTPS{T}, a::Number) where T
     val = -T(a)
     _zero_active!(out)
     out.c[1] = val
@@ -92,7 +109,7 @@ end
 @inline function _tpsa_pow!(out::CTPS{T}, a::CTPS{T}, b::Int) where T
     pow!(out, a, b)
 end
-@inline function _tpsa_pow!(out::CTPS{T}, a::Real, b::Int) where T
+@inline function _tpsa_pow!(out::CTPS{T}, a::Number, b::Int) where T
     val = T(a)^b
     _zero_active!(out)
     out.c[1] = val
@@ -101,12 +118,12 @@ end
 
 # Scalar unary calls evaluate in their original scalar type, then store a
 # constant polynomial. CTPS arguments keep the existing in-place kernels.
-for f in (:sin, :cos, :exp, :log, :sqrt, :sinh, :cosh)
+for f in (:sin, :cos, :tan, :exp, :log, :sqrt, :sinh, :cosh, :asin, :acos)
     helper = Symbol("_tpsa_", f, "!")
     kernel = Symbol(f, "!")
     @eval begin
         @inline $helper(out::CTPS{T}, a::CTPS{T}) where T = $kernel(out, a)
-        @inline function $helper(out::CTPS{T}, a::Real) where T
+        @inline function $helper(out::CTPS{T}, a::Number) where T
             val = T($f(a))
             _zero_active!(out)
             out.c[1] = val
@@ -225,6 +242,14 @@ function _tpsa_lower_expr(ast, ws_sym, stmts, lhs_sym, temporaries)
         maybe_release!(ea, ta);  maybe_release!(eb, tb)
         return (out, tout)
 
+    elseif f == :/ && na == 2
+        (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts, nothing, temporaries)
+        (eb, tb) = _tpsa_lower_expr(ast.args[3], ws_sym, stmts, nothing, temporaries)
+        (out, tout) = get_out()
+        push!(stmts, :(_tpsa_div!($out, $ea, $eb)))
+        maybe_release!(ea, ta);  maybe_release!(eb, tb)
+        return (out, tout)
+
     elseif f == :^ && na == 2
         (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts, nothing, temporaries)
         n_expr   = esc(ast.args[3])   # exponent: can be literal or variable
@@ -233,7 +258,7 @@ function _tpsa_lower_expr(ast, ws_sym, stmts, lhs_sym, temporaries)
         maybe_release!(ea, ta)
         return (out, tout)
 
-    elseif na == 1 && f in (:sin, :cos, :exp, :log, :sqrt, :sinh, :cosh)
+    elseif na == 1 && f in (:sin, :cos, :tan, :exp, :log, :sqrt, :sinh, :cosh, :asin, :acos)
         (ea, ta) = _tpsa_lower_expr(ast.args[2], ws_sym, stmts, nothing, temporaries)
         f_bang   = Symbol("_tpsa_", f, "!")
         (out, tout) = get_out()
@@ -261,9 +286,10 @@ partially written on failure. The number of simultaneous borrows equals the peak
 number of live intermediates in `expr`.
 
 # Supported operations
-`+`, `-`, `*`, unary `-`, `^n` (Int), `sin`, `cos`, `exp`, `log`, `sqrt`,
-`sinh`, `cosh`.  Scalar (Real) values may appear as either operand to `+`,
-`-`, `*`, and as arguments to the supported unary functions.
+`+`, `-`, `*`, `/`, unary `-`, `^n` (Int), `sin`, `cos`, `tan`, `exp`, `log`,
+`sqrt`, `sinh`, `cosh`, `asin`, `acos`. Scalar (`Number`) values may appear as
+either operand to `+`, `-`, `*`, `/`, and as arguments to the supported unary
+functions. Any other call is evaluated as an ordinary (allocating) expression.
 
 # Example
 ```julia

@@ -24,14 +24,19 @@ First registered release.
   active in the operands (previously it scanned all of them); sparse
   products are 1.3–2.2× faster and the output degree mask is computed in
   O(active degrees) instead of O(order²).
-- `exp`, `sin`, `cos`, `sinh`, `cosh` and `tan` use a degree-block (Euler
-  operator) recurrence: one block convolution per function instead of one
-  series multiplication per order, 2–5× less arithmetic on dense arguments
-  and far less per-call overhead on sparse ones. Results keep the sparsity
-  structure of the argument (an even argument yields only even degrees).
+- All elementary functions (`exp`, `log`, `sqrt`, `inv`, `/`, `sin`, `cos`,
+  `tan`, `asin`, `acos`, `sinh`, `cosh`) use degree-block (Euler operator)
+  recurrences: one block convolution per function (three for `tan`, `asin`,
+  `acos`) instead of one series multiplication per order — 2–5× less
+  arithmetic on dense arguments and far less per-call overhead on sparse
+  ones. Results keep the sparsity structure of the argument (an even
+  argument yields only even degrees). `asin!`/`acos!` no longer allocate.
 
 ### Added
-- `sincos!(s, c, p)` computes both trigonometric series in one pass.
+- `sincos!(s, c, p)` computes both trigonometric series in one pass;
+  `tan!`, `inv!` and `div!` complete the in-place API.
+- `@tpsa` supports `/`, `tan`, `asin`, `acos`, and `Number` (including
+  complex) scalars.
 - `PSDesc` rejects descriptors whose index tables would exceed
   `PolySeries.MAX_DESCRIPTOR_BYTES[]` (default 2 GiB) instead of attempting
   the allocation.

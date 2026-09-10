@@ -1855,38 +1855,6 @@ function *(a::Number, ctps::CTPS{T}) where T
     return ctps * a
 end
 
-# /
-function inv(ctps::CTPS{T}) where T
-    c0 = cst(ctps)
-    iszero(c0) && throw(DomainError(c0, "inv: the constant term of the series must be nonzero"))
-    desc  = ctps.desc
-    inv_c0 = one(T) / c0
-
-    temp = CTPS(ctps)
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    neg_temp_over_c0 = CTPS(temp)
-    scale!(neg_temp_over_c0, -inv_c0)
-
-    term      = _ctps_constant(inv_c0, desc)
-    term_next = _ctps_zero(T, desc)      # pre-allocated; swapped each iteration
-    sum       = _ctps_constant(inv_c0, desc)   # heap-allocated (returned)
-
-    for i in 1:desc.order
-        mul!(term_next, term, neg_temp_over_c0)
-        term, term_next = term_next, term  # swap bindings — zero-cost, no copy
-        addto!(sum, term)
-    end
-    return sum
-end
-
-function /(ctps1::CTPS{T}, ctps2::CTPS{T}) where T
-    _check_descriptors(ctps1, ctps2)
-    iszero(cst(ctps2)) && throw(DomainError(cst(ctps2), "division: the constant term of the divisor must be nonzero"))
-    return ctps1 * inv(ctps2)
-end
-
 # Scalar division. The scalar may be any `Number` (e.g. an `Int` literal in
 # `ctps / 2`) and is converted to the coefficient type, matching `+`, `-`, `*`.
 # A single method per direction avoids the `(CTPS{T}, T)` / `(CTPS{T}, Number)`
@@ -1900,8 +1868,9 @@ function /(ctps::CTPS{T}, a::Number) where T
 end
 
 function /(a::Number, ctps::CTPS{T}) where T
-    iszero(cst(ctps)) && throw(DomainError(cst(ctps), "division: the constant term of the divisor must be nonzero"))
-    return T(a) * inv(ctps)
+    y = inv(ctps)
+    scale!(y, T(a))
+    return y
 end
 
 # ── Graded (Euler-operator) recurrences for elementary functions ─────────────
@@ -2009,8 +1978,12 @@ function _exp_series!(y::CTPS{T}, f::CTPS{T}) where T
 end
 
 # (s, c) = (sin(f), cos(f)) or (sinh(f), cosh(f)) when `hyperbolic`. Neither
-# output may share storage with `f` or with the other.
-function _sincos_series!(s::CTPS{T}, c::CTPS{T}, f::CTPS{T}, hyperbolic::Bool) where T
+# output may share storage with `f` or with the other. Each recurrence reads
+# its partner only up to degree order-1, so when a single function is wanted
+# the companion's top block — by far the largest — is skipped (`s_top`/`c_top`
+# false); the companion's mask then omits that degree.
+function _sincos_series!(s::CTPS{T}, c::CTPS{T}, f::CTPS{T}, hyperbolic::Bool;
+                         s_top::Bool=true, c_top::Bool=true) where T
     desc  = f.desc
     order = desc.order
     fc, sc, cc = f.c, s.c, c.c
@@ -2023,22 +1996,185 @@ function _sincos_series!(s::CTPS{T}, c::CTPS{T}, f::CTPS{T}, hyperbolic::Bool) w
     for k in 1:order
         contrib = _reaching_degrees(hmask, reach, k)
         contrib == 0 && continue
-        _zero_block!(sc, desc, k)
-        _zero_block!(cc, desc, k)
+        do_s = s_top || k < order
+        do_c = c_top || k < order
+        do_s && _zero_block!(sc, desc, k)
+        do_c && _zero_block!(cc, desc, k)
         inv_k = one(T) / T(k)
         while contrib != 0
             j = trailing_zeros(contrib)
             contrib &= contrib - UInt64(1)
             w = T(j) * inv_k
-            _block_product_add!(sc, fc, j, cc, k - j, w, desc)
-            _block_product_add!(cc, fc, j, sc, k - j, sign * w, desc)
+            do_s && _block_product_add!(sc, fc, j, cc, k - j, w, desc)
+            do_c && _block_product_add!(cc, fc, j, sc, k - j, sign * w, desc)
         end
         reach |= UInt64(1) << k
     end
-    s.degree_mask[] = reach
-    c.degree_mask[] = reach
+    top = UInt64(1) << order
+    s.degree_mask[] = s_top ? reach : reach & ~top
+    c.degree_mask[] = c_top ? reach : reach & ~top
     return nothing
 end
+
+# ── Recurrences with a division: log, sqrt, inv, /, asin ─────────────────────
+#
+#   (E y)·g = sign·E h          (log: g = h = f;  asin: g = √(1-f²), h = f)
+#     → y_k = sign·h_k/g₀ − Σ_{j=1}^{k-1} ((k-j)/(k g₀)) g_j ⊛ y_{k-j}
+#   y² = w                       (sqrt; w_k supplied as hsign·h_k)
+#     → y_k = hsign·h_k/(2y₀) − (1/(2y₀)) Σ_{j=1}^{k-1} y_j ⊛ y_{k-j}
+#       and the symmetric sum takes each unordered pair once.
+#   y·f = 1                      (inv)   → y_k = −(1/a₀) Σ_{j=1}^{k} h_j ⊛ y_{k-j}
+#   y·b = a                      (÷)     → y_k = (a_k − Σ_{j=1}^{k} b_j ⊛ y_{k-j})/b₀
+#
+# Block k of the result is written from its explicit term first (an elementwise
+# read-then-write at the same index, so that term may come from a series that
+# shares storage with the result), then the products are accumulated.
+
+# Write block k of `yc` as w·hc[block k] when the block of h is active, else zero.
+@inline function _seed_block!(yc::Vector{T}, hc::Vector{T}, hmask::UInt64, k::Int,
+                              w::T, desc::PSDesc) where T
+    s = desc.off[k + 1]
+    e = s + desc.Nd[k + 1] - 1
+    if (hmask >> k) & UInt64(1) != 0
+        @inbounds @simd for i in s:e
+            yc[i] = w * hc[i]
+        end
+        return true
+    end
+    @inbounds @simd for i in s:e
+        yc[i] = zero(T)
+    end
+    return false
+end
+
+# Solve (E y)·g = sign·E h with y₀ given. `y` may share storage with h (each h
+# block is consumed by _seed_block! before anything else touches it) but not
+# with g.
+function _euler_divide_series!(y::CTPS{T}, y0::T, hc::Vector{T}, hmask::UInt64,
+                               gc::Vector{T}, gmask::UInt64, g0::T, sign::T,
+                               desc::PSDesc) where T
+    order = desc.order
+    yc = y.c
+    hm = hmask & ~UInt64(1)
+    gm = gmask & ~UInt64(1)
+    yc[1] = y0
+    inv_g0 = one(T) / g0
+    reach = UInt64(1)
+    for k in 1:order
+        # g_j with 1 ≤ j ≤ k-1 paired with an already reached y_{k-j}
+        contrib = _reaching_degrees(gm, reach, k) & ~(UInt64(1) << k)
+        has_h = (hm >> k) & UInt64(1) != 0
+        (contrib == 0 && !has_h && !within_autodiff()) && continue
+        _seed_block!(yc, hc, hm, k, sign * inv_g0, desc)
+        inv_kg0 = inv_g0 / T(k)
+        while contrib != 0
+            j = trailing_zeros(contrib)
+            contrib &= contrib - UInt64(1)
+            _block_product_add!(yc, gc, j, yc, k - j, -T(k - j) * inv_kg0, desc)
+        end
+        reach |= UInt64(1) << k
+    end
+    y.degree_mask[] = reach
+    return y
+end
+
+# y = √(y₀² + hsign·h) with the root fixed by y₀. `y` may share storage with h.
+function _sqrt_series!(y::CTPS{T}, y0::T, hc::Vector{T}, hmask::UInt64, hsign::T,
+                       desc::PSDesc) where T
+    order = desc.order
+    yc = y.c
+    hm = hmask & ~UInt64(1)
+    yc[1] = y0
+    inv_2y0 = one(T) / (y0 + y0)
+    reach = UInt64(1)
+    for k in 1:order
+        # pairs (j, k-j) of reached y blocks, 1 ≤ j ≤ k-1
+        contrib = _reaching_degrees(reach & ~UInt64(1), reach, k) & ~(UInt64(1) << k)
+        has_h = (hm >> k) & UInt64(1) != 0
+        (contrib == 0 && !has_h && !within_autodiff()) && continue
+        _seed_block!(yc, hc, hm, k, hsign * inv_2y0, desc)
+        while contrib != 0
+            j = trailing_zeros(contrib)
+            contrib &= contrib - UInt64(1)
+            2j > k && break                       # ascending j: the rest are mirrors
+            w = 2j == k ? -inv_2y0 : -(inv_2y0 + inv_2y0)
+            _block_product_add!(yc, yc, j, yc, k - j, w, desc)
+        end
+        reach |= UInt64(1) << k
+    end
+    y.degree_mask[] = reach
+    return y
+end
+
+# y = 1/f. `y` must not share storage with f.
+function _inv_series!(y::CTPS{T}, f::CTPS{T}) where T
+    desc  = f.desc
+    order = desc.order
+    fc, yc = f.c, y.c
+    hm = f.degree_mask[] & ~UInt64(1)
+    a0 = cst(f)
+    inv_a0 = one(T) / a0
+    yc[1] = inv_a0
+    reach = UInt64(1)
+    for k in 1:order
+        contrib = _reaching_degrees(hm, reach, k)
+        contrib == 0 && continue
+        _zero_block!(yc, desc, k)
+        while contrib != 0
+            j = trailing_zeros(contrib)
+            contrib &= contrib - UInt64(1)
+            _block_product_add!(yc, fc, j, yc, k - j, -inv_a0, desc)
+        end
+        reach |= UInt64(1) << k
+    end
+    y.degree_mask[] = reach
+    return y
+end
+
+# y = a/b. `y` may share storage with a, not with b.
+function _div_series!(y::CTPS{T}, a::CTPS{T}, b::CTPS{T}) where T
+    desc  = a.desc
+    order = desc.order
+    ac, bc, yc = a.c, b.c, y.c
+    am = a.degree_mask[]
+    bm = b.degree_mask[] & ~UInt64(1)
+    b0 = cst(b)
+    inv_b0 = one(T) / b0
+    yc[1] = cst(a) * inv_b0
+    reach = UInt64(1)
+    for k in 1:order
+        contrib = _reaching_degrees(bm, reach, k)
+        has_a = (am >> k) & UInt64(1) != 0
+        (contrib == 0 && !has_a && !within_autodiff()) && continue
+        _seed_block!(yc, ac, am, k, inv_b0, desc)
+        while contrib != 0
+            j = trailing_zeros(contrib)
+            contrib &= contrib - UInt64(1)
+            _block_product_add!(yc, bc, j, yc, k - j, -inv_b0, desc)
+        end
+        reach |= UInt64(1) << k
+    end
+    y.degree_mask[] = reach
+    return y
+end
+
+# y = asin(f) (or acos when `want_acos`), given scratch series t and g that do
+# not share storage with y or f. y may share storage with f.
+function _asin_series!(y::CTPS{T}, f::CTPS{T}, want_acos::Bool,
+                       t::CTPS{T}, g::CTPS{T}) where T
+    desc = f.desc
+    a0 = cst(f)
+    g0 = _asin_root(a0)                       # the branch of Base.asin's derivative
+    # g = √(1 − f²): t = f², then the square-root recurrence on 1 − t with the
+    # root fixed by g0 (so the branch is that of the scalar function).
+    mul!(t, f, f)
+    _sqrt_series!(g, g0, t.c, t.degree_mask[], -one(T), desc)
+    y0   = want_acos ? Base.acos(a0) : Base.asin(a0)
+    sign = want_acos ? -one(T) : one(T)
+    _euler_divide_series!(y, y0, f.c, f.degree_mask[], g.c, g.degree_mask[], g0, sign, desc)
+    return y
+end
+
 
 # exponential
 function exp(ctps::CTPS{T}) where T
@@ -2096,12 +2232,12 @@ function _single_sincos!(result::CTPS{T}, ctps::CTPS{T}, want_sin::Bool, hyperbo
     (idx_other, other) = _ctps_pooled(T, desc)
     if result.c === ctps.c
         (idx_src, src) = _ctps_pooled_copy(ctps, desc)
-        want_sin ? _sincos_series!(result, other, src, hyperbolic) :
-                   _sincos_series!(other, result, src, hyperbolic)
+        want_sin ? _sincos_series!(result, other, src, hyperbolic; c_top=false) :
+                   _sincos_series!(other, result, src, hyperbolic; s_top=false)
         _pool_release!(idx_src, src, desc)
     else
-        want_sin ? _sincos_series!(result, other, ctps, hyperbolic) :
-                   _sincos_series!(other, result, ctps, hyperbolic)
+        want_sin ? _sincos_series!(result, other, ctps, hyperbolic; c_top=false) :
+                   _sincos_series!(other, result, ctps, hyperbolic; s_top=false)
     end
     _pool_release!(idx_other, other, desc)
     return result
@@ -2112,8 +2248,8 @@ function _single_sincos(ctps::CTPS{T}, want_sin::Bool, hyperbolic::Bool) where T
     desc = ctps.desc
     result = _ctps_zero(T, desc)
     (idx_other, other) = _ctps_pooled(T, desc)   # heap under AD, pool otherwise
-    want_sin ? _sincos_series!(result, other, ctps, hyperbolic) :
-               _sincos_series!(other, result, ctps, hyperbolic)
+    want_sin ? _sincos_series!(result, other, ctps, hyperbolic; c_top=false) :
+               _sincos_series!(other, result, ctps, hyperbolic; s_top=false)
     _pool_release!(idx_other, other, desc)
     return result
 end
@@ -2127,148 +2263,180 @@ cos!(result::CTPS{T}, ctps::CTPS{T}) where T  = _single_sincos!(result, ctps, fa
 sinh!(result::CTPS{T}, ctps::CTPS{T}) where T = _single_sincos!(result, ctps, true,  true)
 cosh!(result::CTPS{T}, ctps::CTPS{T}) where T = _single_sincos!(result, ctps, false, true)
 
-# logarithm (zero loop allocations)
-function log(ctps::CTPS{T}) where T
+# ── inverse, division, logarithm, square root ────────────────────────────────
+
+"""
+    inv!(out::CTPS, p::CTPS) -> out
+
+Write `1/p` to `out`. The constant term of `p` must be nonzero. `out` may alias `p`.
+"""
+function inv!(result::CTPS{T}, ctps::CTPS{T}) where T
+    ctps = _ad_input(ctps)
+    _check_descriptors(result, ctps)
     a0 = cst(ctps)
-    iszero(a0) && throw(DomainError(a0, "log: the constant term of the series must be nonzero"))
-    desc   = ctps.desc
-    inv_a0 = one(T) / a0
-
-    temp = CTPS(ctps)
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    term = CTPS(temp)
-    scale!(term, inv_a0)
-
-    neg_temp_over_a0 = CTPS(temp)
-    scale!(neg_temp_over_a0, -inv_a0)
-
-    sum       = CTPS(term)
-    term_next = _ctps_zero(T, desc)      # pre-allocated; swapped each iteration
-
-    for i in 2:desc.order
-        mul!(term_next, term, neg_temp_over_a0)
-        term, term_next = term_next, term  # swap bindings — zero-cost, no copy
-        _add_scaled!(sum, term, one(T) / T(i))
+    iszero(a0) && throw(DomainError(a0, "inv: the constant term of the series must be nonzero"))
+    desc = ctps.desc
+    if result.c === ctps.c
+        (idx, src) = _ctps_pooled_copy(ctps, desc)
+        _inv_series!(result, src)
+        _pool_release!(idx, src, desc)
+    else
+        _inv_series!(result, ctps)
     end
-    sum.c[1] = Base.log(a0)
-    sum.degree_mask[] |= UInt64(1)
-    return sum
+    return result
+end
+
+function inv(ctps::CTPS{T}) where T
+    ctps = _ad_input(ctps)
+    a0 = cst(ctps)
+    iszero(a0) && throw(DomainError(a0, "inv: the constant term of the series must be nonzero"))
+    return _inv_series!(_ctps_zero(T, ctps.desc), ctps)
+end
+
+"""
+    div!(out::CTPS, a::CTPS, b::CTPS) -> out
+
+Write `a / b` to `out` with a single division recurrence (no intermediate
+inverse). The constant term of `b` must be nonzero. `out` may alias `a` or `b`.
+"""
+function div!(result::CTPS{T}, a::CTPS{T}, b::CTPS{T}) where T
+    a = _ad_input(a)
+    b = _ad_input(b)
+    _check_descriptors(result, a)
+    _check_descriptors(a, b)
+    b0 = cst(b)
+    iszero(b0) && throw(DomainError(b0, "division: the constant term of the divisor must be nonzero"))
+    desc = a.desc
+    if result.c === b.c
+        (idx, src) = _ctps_pooled_copy(b, desc)
+        _div_series!(result, a, src)          # aliasing a is fine: seeded first
+        _pool_release!(idx, src, desc)
+    else
+        _div_series!(result, a, b)
+    end
+    return result
+end
+
+function /(ctps1::CTPS{T}, ctps2::CTPS{T}) where T
+    ctps1 = _ad_input(ctps1)
+    ctps2 = _ad_input(ctps2)
+    _check_descriptors(ctps1, ctps2)
+    b0 = cst(ctps2)
+    iszero(b0) && throw(DomainError(b0, "division: the constant term of the divisor must be nonzero"))
+    return _div_series!(_ctps_zero(T, ctps1.desc), ctps1, ctps2)
+end
+
+@inline function _log_center(a0)
+    iszero(a0) && throw(DomainError(a0, "log: the constant term of the series must be nonzero"))
+    return Base.log(a0)                       # DomainError for a negative real center
+end
+
+function log(ctps::CTPS{T}) where T
+    ctps = _ad_input(ctps)
+    a0 = cst(ctps)
+    log_a0 = _log_center(a0)
+    y = _ctps_zero(T, ctps.desc)
+    m = ctps.degree_mask[]
+    return _euler_divide_series!(y, log_a0, ctps.c, m, ctps.c, m, a0, one(T), ctps.desc)
 end
 
 function log!(result::CTPS{T}, ctps::CTPS{T}) where T
+    ctps = _ad_input(ctps)
     _check_descriptors(result, ctps)
     a0 = cst(ctps)
-    iszero(a0) && throw(DomainError(a0, "log: the constant term of the series must be nonzero"))
-    # Validate the scalar logarithm before borrowing scratch buffers or
-    # modifying result, so domain errors cannot leak internal pool capacity.
-    log_a0 = Base.log(a0)
-    desc   = ctps.desc
-    inv_a0 = one(T) / a0
-
-    (idx_temp, temp) = _ctps_pooled_copy(ctps, desc)
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    (idx_term, term) = _ctps_pooled_copy(temp, desc)
-    scale!(term, inv_a0)
-
-    (idx_tn, term_next) = _ctps_pooled(T, desc)
-
-    (idx_ntoa, neg_temp_over_a0) = _ctps_pooled_copy(temp, desc)
-    scale!(neg_temp_over_a0, -inv_a0)
-
-    copy!(result, term)  # result = term (first-order Taylor term)
-
-    for i in 2:desc.order
-        mul!(term_next, term, neg_temp_over_a0)
-        term, term_next = term_next, term
-        idx_term, idx_tn = idx_tn, idx_term # Keep pool ownership with its buffer.
-        _add_scaled!(result, term, one(T) / T(i))
+    log_a0 = _log_center(a0)                  # validate before touching result
+    desc = ctps.desc
+    if result.c === ctps.c
+        (idx, src) = _ctps_pooled_copy(ctps, desc)
+        m = src.degree_mask[]
+        _euler_divide_series!(result, log_a0, src.c, m, src.c, m, a0, one(T), desc)
+        _pool_release!(idx, src, desc)
+    else
+        m = ctps.degree_mask[]
+        _euler_divide_series!(result, log_a0, ctps.c, m, ctps.c, m, a0, one(T), desc)
     end
-
-    result.c[1] = log_a0
-    result.degree_mask[] |= UInt64(1)
-    _pool_release!(idx_temp, temp,             desc)
-    _pool_release!(idx_term, term,             desc)
-    _pool_release!(idx_tn,   term_next,        desc)
-    _pool_release!(idx_ntoa, neg_temp_over_a0, desc)
     return result
 end
 
-# square root (minimal allocations)
+@inline function _sqrt_center(a0::T) where T
+    iszero(a0) && throw(DomainError(a0, "Square root requires a nonzero expansion center"))
+    T <: Real && a0 < zero(T) && throw(DomainError(a0, "sqrt: negative real expansion center; use complex coefficients"))
+    return Base.sqrt(a0)
+end
+
+# The square-root recurrence consumes each block of the argument before it
+# writes the same block of the result, so the output may alias the input.
 function sqrt(ctps::CTPS{T}) where T
-    a0_val = cst(ctps)
-    iszero(a0_val) && throw(DomainError(a0_val, "Square root requires a nonzero expansion center"))
-    T <: Real && a0_val < zero(T) && throw(DomainError(a0_val, "sqrt: negative real expansion center; use complex coefficients"))
-    a0   = Base.sqrt(a0_val)
-    desc = ctps.desc
-
-    temp = CTPS(ctps)
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    term = CTPS(temp)
-    scale!(term, one(T) / a0)
-
-    neg_temp_over_a0 = CTPS(temp)
-    scale!(neg_temp_over_a0, -one(T) / a0_val)
-
-    sum      = CTPS(term)
-    coeff = one(T) / T(2)
-    scale!(sum, coeff)
-    term_buf = _ctps_zero(T, desc)      # pre-allocated; swapped each iteration
-
-    for i in 2:desc.order
-        coeff *= T(2i - 3) / T(2i)
-        mul!(term_buf, term, neg_temp_over_a0)
-        term, term_buf = term_buf, term  # swap bindings — zero-cost, no copy
-        _add_scaled!(sum, term, coeff)
-    end
-    sum.c[1] = a0
-    sum.degree_mask[] |= UInt64(1)
-    return sum
+    ctps = _ad_input(ctps)
+    y0 = _sqrt_center(cst(ctps))
+    return _sqrt_series!(_ctps_zero(T, ctps.desc), y0, ctps.c, ctps.degree_mask[], one(T), ctps.desc)
 end
 
 function sqrt!(result::CTPS{T}, ctps::CTPS{T}) where T
+    ctps = _ad_input(ctps)
     _check_descriptors(result, ctps)
-    a0_val = cst(ctps)
-    iszero(a0_val) && throw(DomainError(a0_val, "Square root requires a nonzero expansion center"))
-    T <: Real && a0_val < zero(T) && throw(DomainError(a0_val, "sqrt: negative real expansion center; use complex coefficients"))
-    a0   = Base.sqrt(a0_val)
+    y0 = _sqrt_center(cst(ctps))
+    return _sqrt_series!(result, y0, ctps.c, ctps.degree_mask[], one(T), ctps.desc)
+end
+
+@inline _asin_root(a0) = Base.sqrt(one(a0) - a0 * a0)
+@inline function _asin_root(a0::Complex)
+    a, b = reim(a0)
+    # sqrt(1-z)*sqrt(1+z) selects the derivative branch of Base.asin.
+    # Construct the imaginary parts explicitly: complex subtraction can lose
+    # the -0.0 in 1-(a+0.0im), selecting the other side of the cut.
+    return Base.sqrt(Complex(one(a) - a, -b)) *
+           Base.sqrt(Complex(one(a) + a, b))
+end
+
+@inline function _asin_center(a0::T) where T
+    T <: Real && abs(a0) >= one(T) && throw(DomainError(a0, "asin/acos: |constant term| must be < 1 for real coefficients"))
+    iszero(_asin_root(a0)) && throw(DomainError(a0, "Inverse trigonometric series require a nonsingular expansion center"))
+    return nothing
+end
+
+# Two scratch series (f² and √(1−f²)); the result may alias the argument.
+function _asin_into!(result::CTPS{T}, ctps::CTPS{T}, want_acos::Bool) where T
+    ctps = _ad_input(ctps)
+    _check_descriptors(result, ctps)
+    _asin_center(cst(ctps))                   # validate before borrowing or writing
     desc = ctps.desc
-
-    (idx_temp, temp) = _ctps_pooled_copy(ctps, desc)
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    (idx_term, term) = _ctps_pooled_copy(temp, desc)
-    scale!(term, one(T) / a0)
-
-    (idx_tn,   temp_mul) = _ctps_pooled(T, desc)
-
-    (idx_ntoa, neg_temp_over_a0) = _ctps_pooled_copy(temp, desc)
-    scale!(neg_temp_over_a0, -one(T) / a0_val)
-
-    copy!(result, term)
-    coeff = one(T) / T(2)
-    scale!(result, coeff)
-
-    for i in 2:desc.order
-        coeff *= T(2i - 3) / T(2i)
-        mul!(temp_mul, term, neg_temp_over_a0)
-        copy!(term, temp_mul)
-        _add_scaled!(result, term, coeff)
-    end
-
-    result.c[1] = a0
-    result.degree_mask[] |= UInt64(1)
-    _pool_release!(idx_temp, temp,             desc)
-    _pool_release!(idx_term, term,             desc)
-    _pool_release!(idx_tn,   temp_mul,         desc)
-    _pool_release!(idx_ntoa, neg_temp_over_a0, desc)
+    (idx_t, t) = _ctps_pooled(T, desc)
+    (idx_g, g) = _ctps_pooled(T, desc)
+    _asin_series!(result, ctps, want_acos, t, g)
+    _pool_release!(idx_g, g, desc)
+    _pool_release!(idx_t, t, desc)
     return result
+end
+
+asin(ctps::CTPS{T}) where T = _asin_into!(_ctps_zero(T, ctps.desc), ctps, false)
+acos(ctps::CTPS{T}) where T = _asin_into!(_ctps_zero(T, ctps.desc), ctps, true)
+asin!(result::CTPS{T}, ctps::CTPS{T}) where T = _asin_into!(result, ctps, false)
+acos!(result::CTPS{T}, ctps::CTPS{T}) where T = _asin_into!(result, ctps, true)
+
+# ── tangent: one shared sin/cos pass, then one division recurrence ───────────
+
+"""
+    tan!(out::CTPS, p::CTPS) -> out
+
+Write `tan(p)` to `out`. `out` may alias `p`.
+"""
+function tan!(result::CTPS{T}, ctps::CTPS{T}) where T
+    ctps = _ad_input(ctps)
+    _check_descriptors(result, ctps)
+    desc = ctps.desc
+    (idx_s, s) = _ctps_pooled(T, desc)
+    (idx_c, c) = _ctps_pooled(T, desc)
+    _sincos_series!(s, c, ctps, false)        # reads ctps completely before result is touched
+    _div_series!(result, s, c)
+    _pool_release!(idx_c, c, desc)
+    _pool_release!(idx_s, s, desc)
+    return result
+end
+
+function tan(ctps::CTPS{T}) where T
+    ctps = _ad_input(ctps)
+    return tan!(_ctps_zero(T, ctps.desc), ctps)
 end
 
 # power
@@ -2395,160 +2563,3 @@ function pow!(result::CTPS{T}, ctps::CTPS{T}, b::Int) where T
     return result
 end
 
-# ── arcsin / arccos ─────────────────────────────────────────────────────────
-#
-# Algorithm: direct Taylor expansion via scalar coefficient recurrence.
-#
-# Split f = a0 + h  (a0 = constant term, h has zero constant).
-# We need g = asin(f) = asin(a0) + Σ_{k=1}^{order} A[k] h^k.
-#
-# Let s² = 1 - f² = c0² - 2a0·h - h². The sign of c0 must agree
-# with the scalar asin branch (including signed zeros on complex cuts).
-# Write s = Σ B[k] h^k.  From s² = c0² - 2a0·h - h²:
-#   B[0] = c0
-#   B[n] = (R[n] - Σ_{j=1}^{n-1} B[j]B[n-j]) / (2c0),
-#          R[1]=-2a0, R[2]=-1, R[n≥3]=0
-#
-# From s·(dg/dh) = 1  (power-series convolution):
-#   A[1] = 1/c0
-#   A[n+1] = -Σ_{j=1}^{n} B[j]·(n-j+1)·A[n-j+1] / ((n+1)·c0)
-#
-# Complexity: O(order²) scalar ops, then one loop of order CTPS mul!/add —
-# identical structure to sin/cos, zero inner CTPS calls.
-@inline _asin_root(a0) = Base.sqrt(one(a0) - a0 * a0)
-@inline function _asin_root(a0::Complex)
-    a, b = reim(a0)
-    # sqrt(1-z)*sqrt(1+z) selects the derivative branch of Base.asin.
-    # Construct the imaginary parts explicitly: complex subtraction can lose
-    # the -0.0 in 1-(a+0.0im), selecting the other side of the cut.
-    return Base.sqrt(Complex(one(a) - a, -b)) *
-           Base.sqrt(Complex(one(a) + a, b))
-end
-
-@inline function _asin_coeffs(a0::T, order::Int) where T
-    c0     = _asin_root(a0)
-    iszero(c0) && throw(DomainError(a0, "Inverse trigonometric series require a nonsingular expansion center"))
-    inv_c0 = one(T) / c0
-
-    # B[k+1] stores mathematical B[k],  k = 0..order
-    B = Vector{T}(undef, order + 1)
-    B[1] = c0
-    inv_2c0 = inv_c0 / 2
-    for n in 1:order
-        R = n == 1 ? T(-2) * a0 : (n == 2 ? -one(T) : zero(T))
-        s = zero(T)
-        for j in 1:n-1
-            s += B[j+1] * B[n-j+1]
-        end
-        B[n+1] = (R - s) * inv_2c0
-    end
-
-    # A[k] stores A[k],  k = 1..order
-    A = Vector{T}(undef, order)
-    order == 0 && return A
-    A[1] = inv_c0
-    for n in 1:order-1
-        s = zero(T)
-        for j in 1:n
-            s += B[j+1] * T(n - j + 1) * A[n-j+1]
-        end
-        A[n+1] = -s * inv_c0 / T(n + 1)
-    end
-    return A
-end
-
-# arcsin
-function asin(ctps::CTPS{T}) where T
-    a0 = cst(ctps)
-    T <: Real && abs(a0) >= one(T) && throw(DomainError(a0, "asin/acos: |constant term| must be < 1 for real coefficients"))
-    asin_a0 = Base.asin(a0)
-    desc    = ctps.desc
-    order   = desc.order
-
-    A = _asin_coeffs(a0, order)
-
-    temp = CTPS(ctps)
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    term      = _ctps_constant(one(T), desc)
-    term_next = _ctps_zero(T, desc)      # pre-allocated; swapped each iteration
-    sum       = _ctps_zero(T, desc)
-
-    for i in 1:order
-        mul!(term_next, term, temp)
-        term, term_next = term_next, term  # swap — zero-cost
-        _add_scaled!(sum, term, A[i])
-    end
-    sum.c[1] = asin_a0
-    sum.degree_mask[] |= UInt64(1)
-    return sum
-end
-
-function asin!(result::CTPS{T}, ctps::CTPS{T}) where T
-    _check_descriptors(result, ctps)
-    a0 = cst(ctps)
-    T <: Real && abs(a0) >= one(T) && throw(DomainError(a0, "asin/acos: |constant term| must be < 1 for real coefficients"))
-    asin_a0 = Base.asin(a0)
-    desc    = ctps.desc
-    order   = desc.order
-
-    A = _asin_coeffs(a0, order)
-
-    (idx_temp, temp) = _ctps_pooled_copy(ctps, desc)
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    # Capture the input before clearing an output that may share its storage.
-    _zero_active!(result)
-
-    (idx_term, term) = _ctps_pooled(T, desc)
-    term.c[1] = one(T)
-    term.degree_mask[] = UInt64(1)
-
-    (idx_tn, term_next) = _ctps_pooled(T, desc)
-
-    for i in 1:order
-        mul!(term_next, term, temp)
-        term, term_next = term_next, term
-        idx_term, idx_tn = idx_tn, idx_term # Keep pool ownership with its buffer.
-        _add_scaled!(result, term, A[i])
-    end
-    result.c[1] = asin_a0
-    result.degree_mask[] |= UInt64(1)
-    _pool_release!(idx_temp, temp,      desc)
-    _pool_release!(idx_term, term,      desc)
-    _pool_release!(idx_tn,   term_next, desc)
-    return result
-end
-
-# arccos
-function acos(ctps::CTPS{T}) where T
-    a0 = cst(ctps)
-    result = -asin(ctps)
-    # Use the scalar implementation for its precision and signed-zero branch;
-    # subtracting asin(a0) from pi/2 loses both near a0=1.
-    result.c[1] = Base.acos(a0)
-    result.degree_mask[] |= UInt64(1)
-    return result
-end
-
-function acos!(result::CTPS{T}, ctps::CTPS{T}) where T
-    _check_descriptors(result, ctps)
-    acos_a0 = Base.acos(cst(ctps)) # Capture before an aliased input is overwritten.
-    asin!(result, ctps)          # result = asin(ctps)
-    scale!(result, -one(T))      # result = -asin(ctps);  degree_mask unchanged
-    result.c[1] = acos_a0
-    result.degree_mask[] |= UInt64(1)
-    return result
-end
-
-# tangent: one shared sin/cos pass, then a series division.
-function tan(ctps::CTPS{T}) where T
-    ctps = _ad_input(ctps)
-    desc = ctps.desc
-    s = _ctps_zero(T, desc)
-    c = _ctps_zero(T, desc)
-    _sincos_series!(s, c, ctps, false)
-    return s / c
-end

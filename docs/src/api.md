@@ -94,20 +94,24 @@ on its opposite side.
 exp!
 log!
 sqrt!
+inv!
+div!
 sin!
 cos!
 sincos!
+tan!
 asin!
 acos!
 sinh!
 cosh!
 ```
 
-`exp`, `sin`, `cos`, `sinh` and `cosh` (and their in-place forms) are evaluated
-by a degree-block recurrence — one block convolution per function, rather than
-one series product per order — and produce a result whose active degrees are
+Every elementary function is evaluated by a degree-block recurrence — one block
+convolution per function (`tan`, `asin` and `acos` use three) rather than one
+series product per order — and produces a result whose active degrees are
 exactly those reachable from the active degrees of the argument. `sincos!`
-computes both trigonometric series in one pass for the cost of one.
+computes both trigonometric series in one pass for the cost of one; `div!`
+divides two series with a single recurrence and no intermediate inverse.
 
 ## Composition
 
