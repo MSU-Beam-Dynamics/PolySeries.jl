@@ -96,11 +96,18 @@ log!
 sqrt!
 sin!
 cos!
+sincos!
 asin!
 acos!
 sinh!
 cosh!
 ```
+
+`exp`, `sin`, `cos`, `sinh` and `cosh` (and their in-place forms) are evaluated
+by a degree-block recurrence — one block convolution per function, rather than
+one series product per order — and produce a result whose active degrees are
+exactly those reachable from the active degrees of the argument. `sincos!`
+computes both trigonometric series in one pass for the cost of one.
 
 ## Composition
 

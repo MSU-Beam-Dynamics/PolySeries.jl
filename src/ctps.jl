@@ -430,15 +430,18 @@ end
 # O(order²) vs O(N) for compute_degree_mask; order is typically small (≤20).
 # Conservative: may have false positives if all contributions cancel.
 @inline function compose_degree_mask(mask1::UInt64, mask2::UInt64, order::Int)
+    # Shifting mask2 by each active degree of mask1 sets every reachable sum;
+    # bits above `order` fall off the end or are cut by the final mask. This is
+    # popcount(mask1) shifts instead of an (order+1)(order+2)/2 double loop,
+    # which mattered once the schedule scan itself had been removed from mul!.
     result = UInt64(0)
-    @inbounds for di in 0:order
-        (mask1 & (UInt64(1) << di)) == 0 && continue
-        @inbounds for dj in 0:(order - di)
-            (mask2 & (UInt64(1) << dj)) == 0 && continue
-            result |= (UInt64(1) << (di + dj))
-        end
+    m1 = mask1
+    while m1 != 0
+        di = trailing_zeros(m1)
+        m1 &= m1 - UInt64(1)
+        result |= mask2 << di
     end
-    return result
+    return result & (typemax(UInt64) >> (63 - order))
 end
 
 # Fast internal constructors that reuse an existing PSDesc (no lock acquisition).
@@ -1901,79 +1904,228 @@ function /(a::Number, ctps::CTPS{T}) where T
     return T(a) * inv(ctps)
 end
 
-# exponential (zero loop allocations)
-# Heap-only (no pool borrows) so that Enzyme.jl can differentiate through this
-# function without hitting "constant memory written with active data" errors.
-# Performance-critical code should use exp!(result, ctps) instead.
-function exp(ctps::CTPS{T}) where T
-    a0   = cst(ctps)
-    desc = ctps.desc
-    # Fast path: polynomial is identically zero → exp(0) = 1 exactly.
-    # NOTE: do NOT shortcut on `a0 == 0` alone — there may be non-zero higher terms.
-    ctps.degree_mask[] == 0 && !within_autodiff() && return _ctps_constant(one(T), desc)
+# ── Graded (Euler-operator) recurrences for elementary functions ─────────────
+#
+# Write f = a₀ + h with h the degrees ≥ 1, and split every series into
+# homogeneous degree blocks, y = Σ_k y_k. The Euler operator E = Σ xᵢ∂ᵢ acts
+# on a homogeneous block as multiplication by its degree, so an ODE in f
+# becomes a recurrence over blocks that costs ONE block-convolution in total:
+#
+#   exp:   E y = y·E h            → k y_k = Σ_{j=1}^{k} j h_j ⊛ y_{k-j}
+#   sin/cos: E s = c·E h, E c = -s·E h
+#                                 → k s_k =  Σ j h_j ⊛ c_{k-j},  k c_k = -Σ j h_j ⊛ s_{k-j}
+#   sinh/cosh: same with a plus sign in the second line.
+#
+# Accumulating powers hⁱ/i! instead (the previous implementation) performs
+# Σ dᵢ·Nd[dᵢ]·Nd[dⱼ] block products against Σ Nd[dᵢ]·Nd[dⱼ] here — 2.4×
+# more work at nv=2 order 6, 4.8× at nv=2 order 12 — and pays mul!'s
+# per-call cost `order` times over. Only blocks of h that are active are
+# visited, and a block of the result is written only when some active h_j
+# can reach it, so sparsity in the argument is preserved in the result.
+#
+# `⊛` below is the block product taken from the multiplication schedules:
+# the (deg_a ≥ deg_b) schedule maps (i in the deg_a block, j in the deg_b
+# block) to the output index of the product monomial in either orientation.
 
-    temp = CTPS(ctps)          # heap copy
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    term      = _ctps_constant(one(T), desc)
-    term_next = _ctps_zero(T, desc)      # pre-allocated; swapped each iteration
-    sum       = _ctps_constant(one(T), desc)
-
-    for i in 1:desc.order
-        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
-        scale!(term, one(T) / T(i))
-        mul!(term_next, term, temp)
-        term, term_next = term_next, term  # swap bindings — zero-cost, no copy
-        _add_scaled!(sum, term, one(T))
+# out[deg_a + deg_b block] += w · (a's deg_a block) ⊛ (b's deg_b block)
+@inline function _block_product_add!(cr::Vector{T}, a::Vector{T}, deg_a::Int,
+                                     b::Vector{T}, deg_b::Int, w::T, desc::PSDesc) where T
+    if deg_a >= deg_b
+        @inbounds sched = desc.mul[desc.mul_offsets[deg_a + 1] + deg_b]
+        Ni, Nj = Int(sched.Ni), Int(sched.Nj)
+        i_base, j_base = Int(sched.i_start) - 1, Int(sched.j_start) - 1
+        k_mat = sched.k_local
+        @inbounds @fastmath for i_local in 1:Ni          # a in the di block
+            ai = w * a[i_base + i_local]
+            _prunable_zero(ai) && continue
+            for j_local in 1:Nj
+                cr[k_mat[j_local, i_local]] += ai * b[j_base + j_local]
+            end
+        end
+    else
+        @inbounds sched = desc.mul[desc.mul_offsets[deg_b + 1] + deg_a]
+        Ni, Nj = Int(sched.Ni), Int(sched.Nj)
+        i_base, j_base = Int(sched.i_start) - 1, Int(sched.j_start) - 1
+        k_mat = sched.k_local
+        @inbounds @fastmath for i_local in 1:Ni          # b in the di block
+            bw = w * b[i_base + i_local]
+            _prunable_zero(bw) && continue
+            for j_local in 1:Nj
+                cr[k_mat[j_local, i_local]] += a[j_base + j_local] * bw
+            end
+        end
     end
-    scale!(sum, T(Base.exp(a0)))
-    return sum
+    return nothing
+end
+
+@inline function _zero_block!(c::Vector{T}, desc::PSDesc, degree::Int) where T
+    s = desc.off[degree + 1]
+    e = s + desc.Nd[degree + 1] - 1
+    @inbounds @simd for i in s:e
+        c[i] = zero(T)
+    end
+    return nothing
+end
+
+# Active degrees j of h (1 ≤ j ≤ k) for which the partner block k-j is present
+# in `reach`; zero means block k of the result cannot be reached. During AD
+# every block is computed, since a numerically zero block can carry a tangent.
+@inline function _reaching_degrees(hmask::UInt64, reach::UInt64, k::Int)
+    candidates = hmask & (typemax(UInt64) >> (63 - k)) & ~UInt64(1)
+    within_autodiff() && return candidates
+    contrib = UInt64(0)
+    m = candidates
+    while m != 0
+        j = trailing_zeros(m)
+        m &= m - UInt64(1)
+        (reach >> (k - j)) & UInt64(1) != 0 && (contrib |= UInt64(1) << j)
+    end
+    return contrib
+end
+
+# y = exp(f).  `y` must not share storage with `f`; block 0 of y is written
+# here and blocks 1..order are produced in increasing degree.
+function _exp_series!(y::CTPS{T}, f::CTPS{T}) where T
+    desc  = f.desc
+    order = desc.order
+    fc, yc = f.c, y.c
+    hmask = f.degree_mask[] & ~UInt64(1)
+    yc[1] = Base.exp(cst(f))
+    reach = UInt64(1)
+    for k in 1:order
+        contrib = _reaching_degrees(hmask, reach, k)
+        contrib == 0 && continue
+        _zero_block!(yc, desc, k)
+        inv_k = one(T) / T(k)
+        while contrib != 0
+            j = trailing_zeros(contrib)
+            contrib &= contrib - UInt64(1)
+            _block_product_add!(yc, fc, j, yc, k - j, T(j) * inv_k, desc)
+        end
+        reach |= UInt64(1) << k
+    end
+    y.degree_mask[] = reach
+    return y
+end
+
+# (s, c) = (sin(f), cos(f)) or (sinh(f), cosh(f)) when `hyperbolic`. Neither
+# output may share storage with `f` or with the other.
+function _sincos_series!(s::CTPS{T}, c::CTPS{T}, f::CTPS{T}, hyperbolic::Bool) where T
+    desc  = f.desc
+    order = desc.order
+    fc, sc, cc = f.c, s.c, c.c
+    hmask = f.degree_mask[] & ~UInt64(1)
+    a0 = cst(f)
+    sc[1] = hyperbolic ? Base.sinh(a0) : Base.sin(a0)
+    cc[1] = hyperbolic ? Base.cosh(a0) : Base.cos(a0)
+    sign  = hyperbolic ? one(T) : -one(T)
+    reach = UInt64(1)
+    for k in 1:order
+        contrib = _reaching_degrees(hmask, reach, k)
+        contrib == 0 && continue
+        _zero_block!(sc, desc, k)
+        _zero_block!(cc, desc, k)
+        inv_k = one(T) / T(k)
+        while contrib != 0
+            j = trailing_zeros(contrib)
+            contrib &= contrib - UInt64(1)
+            w = T(j) * inv_k
+            _block_product_add!(sc, fc, j, cc, k - j, w, desc)
+            _block_product_add!(cc, fc, j, sc, k - j, sign * w, desc)
+        end
+        reach |= UInt64(1) << k
+    end
+    s.degree_mask[] = reach
+    c.degree_mask[] = reach
+    return nothing
+end
+
+# exponential
+function exp(ctps::CTPS{T}) where T
+    ctps = _ad_input(ctps)
+    y = _ctps_zero(T, ctps.desc)
+    return _exp_series!(y, ctps)
 end
 
 function exp!(result::CTPS{T}, ctps::CTPS{T}) where T
+    ctps = _ad_input(ctps)
     _check_descriptors(result, ctps)
-    a0 = cst(ctps)
     desc = ctps.desc
-    # Fast path: polynomial is identically zero → exp(0) = 1 exactly.
-    # NOTE: do NOT shortcut on `a0 == 0` alone — there may be non-zero higher terms.
-    if ctps.degree_mask[] == 0 && !within_autodiff()
-        _zero_active!(result)
-        result.c[1] = one(T)
-        result.degree_mask[] = UInt64(1)
-        return result
+    if result.c === ctps.c
+        # The recurrence reads block k of f while writing block k of y.
+        (idx, src) = _ctps_pooled_copy(ctps, desc)
+        _exp_series!(result, src)
+        _pool_release!(idx, src, desc)
+    else
+        _exp_series!(result, ctps)
     end
-
-    (idx_temp, temp)      = _ctps_pooled_copy(ctps, desc)
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    # Capture the input before clearing an output that may share its storage.
-    _zero_active!(result)
-    result.c[1] = one(T)
-    result.degree_mask[] = UInt64(1)
-
-    (idx_term, term)      = _ctps_pooled(T, desc)
-    term.c[1] = one(T)
-    term.degree_mask[] = UInt64(1)
-
-    (idx_tn,   term_next) = _ctps_pooled(T, desc)
-
-    for i in 1:desc.order
-        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
-        scale!(term, one(T) / T(i))
-        mul!(term_next, term, temp)
-        term, term_next = term_next, term
-        idx_term, idx_tn = idx_tn, idx_term # Keep pool ownership with its buffer.
-        _add_scaled!(result, term, one(T))
-    end
-
-    scale!(result, T(Base.exp(a0)))
-    _pool_release!(idx_temp, temp,      desc)
-    _pool_release!(idx_term, term,      desc)
-    _pool_release!(idx_tn,   term_next, desc)
     return result
 end
+
+# sin / cos, together and separately
+function _sincos_into!(s::CTPS{T}, c::CTPS{T}, ctps::CTPS{T}, hyperbolic::Bool) where T
+    ctps = _ad_input(ctps)
+    _check_descriptors(s, ctps)
+    _check_descriptors(c, ctps)
+    s.c === c.c && throw(ArgumentError("sincos!: the two outputs must not share storage"))
+    desc = ctps.desc
+    if s.c === ctps.c || c.c === ctps.c
+        (idx, src) = _ctps_pooled_copy(ctps, desc)
+        _sincos_series!(s, c, src, hyperbolic)
+        _pool_release!(idx, src, desc)
+    else
+        _sincos_series!(s, c, ctps, hyperbolic)
+    end
+    return nothing
+end
+
+"""
+    sincos!(s::CTPS, c::CTPS, p::CTPS) -> nothing
+
+Write `sin(p)` to `s` and `cos(p)` to `c` in one pass. The two series share
+every intermediate, so this costs about the same as either one alone. `s` and
+`c` must not share storage with each other; either may alias `p`.
+"""
+sincos!(s::CTPS{T}, c::CTPS{T}, ctps::CTPS{T}) where T = _sincos_into!(s, c, ctps, false)
+
+# Single-output forms borrow one pooled series for the companion function.
+function _single_sincos!(result::CTPS{T}, ctps::CTPS{T}, want_sin::Bool, hyperbolic::Bool) where T
+    ctps = _ad_input(ctps)
+    _check_descriptors(result, ctps)
+    desc = ctps.desc
+    (idx_other, other) = _ctps_pooled(T, desc)
+    if result.c === ctps.c
+        (idx_src, src) = _ctps_pooled_copy(ctps, desc)
+        want_sin ? _sincos_series!(result, other, src, hyperbolic) :
+                   _sincos_series!(other, result, src, hyperbolic)
+        _pool_release!(idx_src, src, desc)
+    else
+        want_sin ? _sincos_series!(result, other, ctps, hyperbolic) :
+                   _sincos_series!(other, result, ctps, hyperbolic)
+    end
+    _pool_release!(idx_other, other, desc)
+    return result
+end
+
+function _single_sincos(ctps::CTPS{T}, want_sin::Bool, hyperbolic::Bool) where T
+    ctps = _ad_input(ctps)
+    desc = ctps.desc
+    result = _ctps_zero(T, desc)
+    (idx_other, other) = _ctps_pooled(T, desc)   # heap under AD, pool otherwise
+    want_sin ? _sincos_series!(result, other, ctps, hyperbolic) :
+               _sincos_series!(other, result, ctps, hyperbolic)
+    _pool_release!(idx_other, other, desc)
+    return result
+end
+
+sin(ctps::CTPS)  = _single_sincos(ctps, true,  false)
+cos(ctps::CTPS)  = _single_sincos(ctps, false, false)
+sinh(ctps::CTPS) = _single_sincos(ctps, true,  true)
+cosh(ctps::CTPS) = _single_sincos(ctps, false, true)
+sin!(result::CTPS{T}, ctps::CTPS{T}) where T  = _single_sincos!(result, ctps, true,  false)
+cos!(result::CTPS{T}, ctps::CTPS{T}) where T  = _single_sincos!(result, ctps, false, false)
+sinh!(result::CTPS{T}, ctps::CTPS{T}) where T = _single_sincos!(result, ctps, true,  true)
+cosh!(result::CTPS{T}, ctps::CTPS{T}) where T = _single_sincos!(result, ctps, false, true)
 
 # logarithm (zero loop allocations)
 function log(ctps::CTPS{T}) where T
@@ -2243,158 +2395,6 @@ function pow!(result::CTPS{T}, ctps::CTPS{T}, b::Int) where T
     return result
 end
 
-# sin (pool-backed temporaries)
-function sin(ctps::CTPS{T}) where T
-    a0     = cst(ctps)
-    sin_a0 = Base.sin(a0)
-    cos_a0 = Base.cos(a0)
-    desc   = ctps.desc
-
-    temp = CTPS(ctps)
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    term      = _ctps_constant(one(T), desc)
-    term_next = _ctps_zero(T, desc)      # pre-allocated; swapped each iteration
-    sum       = _ctps_zero(T, desc)
-
-    is_odd = true
-    for i in 1:desc.order
-        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
-        scale!(term, one(T) / T(i))
-        mul!(term_next, term, temp)
-        term, term_next = term_next, term  # swap bindings — zero-cost, no copy
-        coeff = is_odd ?
-            cos_a0 * T((-1)^((i-1)÷2)) :
-            sin_a0 * T((-1)^(i÷2))
-        _add_scaled!(sum, term, coeff)
-        is_odd = !is_odd
-    end
-    sum.c[1] = sin_a0
-    sum.degree_mask[] |= UInt64(1)
-    return sum
-end
-
-function sin!(result::CTPS{T}, ctps::CTPS{T}) where T
-    _check_descriptors(result, ctps)
-    a0 = cst(ctps)
-    sin_a0 = Base.sin(a0)
-    cos_a0 = Base.cos(a0)
-    desc = ctps.desc
-
-    (idx_temp, temp)      = _ctps_pooled_copy(ctps, desc)
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    # Capture the input before clearing an output that may share its storage.
-    _zero_active!(result)   # O(active_range) reset; no-op for fresh workspace slots
-
-    (idx_term, term)      = _ctps_pooled(T, desc)
-    term.c[1] = one(T)
-    term.degree_mask[] = UInt64(1)
-
-    (idx_tn,   term_next) = _ctps_pooled(T, desc)
-
-    is_odd = true
-    for i in 1:desc.order
-        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
-        scale!(term, one(T) / T(i))
-        mul!(term_next, term, temp)
-        term, term_next = term_next, term
-        idx_term, idx_tn = idx_tn, idx_term # Keep pool ownership with its buffer.
-        coeff = if is_odd
-            cos_a0 * T((-1) ^ ((i - 1) ÷ 2))
-        else
-            sin_a0 * T((-1) ^ (i ÷ 2))
-        end
-        _add_scaled!(result, term, coeff)
-        is_odd = !is_odd
-    end
-
-    result.c[1] = sin_a0   # explicit = since degree-0 was not touched by the loop
-    result.degree_mask[] |= UInt64(1)
-    _pool_release!(idx_temp, temp,      desc)
-    _pool_release!(idx_term, term,      desc)
-    _pool_release!(idx_tn,   term_next, desc)
-    return result
-end
-
-function cos(ctps::CTPS{T}) where T
-    a0     = cst(ctps)
-    sin_a0 = Base.sin(a0)
-    cos_a0 = Base.cos(a0)
-    desc   = ctps.desc
-
-    temp = CTPS(ctps)
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    term      = _ctps_constant(one(T), desc)
-    term_next = _ctps_zero(T, desc)      # pre-allocated; swapped each iteration
-    sum       = _ctps_zero(T, desc)
-
-    is_odd = true
-    for i in 1:desc.order
-        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
-        scale!(term, one(T) / T(i))
-        mul!(term_next, term, temp)
-        term, term_next = term_next, term  # swap bindings — zero-cost, no copy
-        coeff = is_odd ?
-            sin_a0 * T((-1)^((i+1)÷2)) :
-            cos_a0 * T((-1)^(i÷2))
-        _add_scaled!(sum, term, coeff)
-        is_odd = !is_odd
-    end
-
-    sum.c[1] = cos_a0
-    sum.degree_mask[] |= UInt64(1)
-    return sum
-end
-
-function cos!(result::CTPS{T}, ctps::CTPS{T}) where T
-    _check_descriptors(result, ctps)
-    a0 = cst(ctps)
-    sin_a0 = Base.sin(a0)
-    cos_a0 = Base.cos(a0)
-    desc = ctps.desc
-
-    (idx_temp, temp)      = _ctps_pooled_copy(ctps, desc)
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    # Capture the input before clearing an output that may share its storage.
-    _zero_active!(result)
-
-    (idx_term, term)      = _ctps_pooled(T, desc)
-    term.c[1] = one(T)
-    term.degree_mask[] = UInt64(1)
-
-    (idx_tn,   term_next) = _ctps_pooled(T, desc)
-
-    is_odd = true
-    for i in 1:desc.order
-        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
-        scale!(term, one(T) / T(i))
-        mul!(term_next, term, temp)
-        term, term_next = term_next, term
-        idx_term, idx_tn = idx_tn, idx_term # Keep pool ownership with its buffer.
-        coeff = if is_odd
-            sin_a0 * T((-1) ^ ((i + 1) ÷ 2))
-        else
-            cos_a0 * T((-1) ^ (i ÷ 2))
-        end
-        _add_scaled!(result, term, coeff)
-        is_odd = !is_odd
-    end
-
-    result.c[1] = cos_a0
-    result.degree_mask[] |= UInt64(1)
-    _pool_release!(idx_temp, temp,      desc)
-    _pool_release!(idx_term, term,      desc)
-    _pool_release!(idx_tn,   term_next, desc)
-    return result
-end
-
 # ── arcsin / arccos ─────────────────────────────────────────────────────────
 #
 # Algorithm: direct Taylor expansion via scalar coefficient recurrence.
@@ -2543,185 +2543,12 @@ function acos!(result::CTPS{T}, ctps::CTPS{T}) where T
     return result
 end
 
-# tangent: shares one power-series loop for both sin and cos
+# tangent: one shared sin/cos pass, then a series division.
 function tan(ctps::CTPS{T}) where T
-    a0 = cst(ctps)
-    sin_a0 = Base.sin(a0)
-    cos_a0 = Base.cos(a0)
+    ctps = _ad_input(ctps)
     desc = ctps.desc
-
-    temp = CTPS(ctps)
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    term      = _ctps_constant(one(T), desc)
-    term_next = _ctps_zero(T, desc)      # pre-allocated; swapped each iteration
-    sin_sum   = _ctps_zero(T, desc)
-    cos_sum   = _ctps_zero(T, desc)
-
-    is_odd = true
-    for i in 1:desc.order
-        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
-        scale!(term, one(T) / T(i))
-        mul!(term_next, term, temp)
-        term, term_next = term_next, term  # swap bindings — zero-cost, no copy
-        sin_coeff = is_odd ? cos_a0 * T((-1) ^ ((i - 1) ÷ 2)) :
-                             sin_a0 * T((-1) ^ (i ÷ 2))
-        cos_coeff = is_odd ? sin_a0 * T((-1) ^ ((i + 1) ÷ 2)) :
-                             cos_a0 * T((-1) ^ (i ÷ 2))
-        _add_scaled!(sin_sum, term, sin_coeff)
-        _add_scaled!(cos_sum, term, cos_coeff)
-        is_odd = !is_odd
-    end
-
-    # The power-series loop only writes degrees >= 1, so the degree-0 slot of
-    # the (lazily allocated) sums is still uninitialized here: assign, do not
-    # accumulate. `+=` read garbage and made tan's constant term random.
-    sin_sum.c[1] = sin_a0
-    sin_sum.degree_mask[] |= UInt64(1)
-    cos_sum.c[1] = cos_a0
-    cos_sum.degree_mask[] |= UInt64(1)
-    return sin_sum / cos_sum
-end
-
-# hyperbolic sin
-function sinh(ctps::CTPS{T}) where T
-    a0 = cst(ctps)
-    sinh_a0 = Base.sinh(a0)
-    cosh_a0 = Base.cosh(a0)
-    desc = ctps.desc
-
-    temp = CTPS(ctps)
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    term      = _ctps_constant(one(T), desc)
-    term_next = _ctps_zero(T, desc)      # pre-allocated; swapped each iteration
-    sum       = _ctps_zero(T, desc)      # heap-allocated (returned)
-
-    is_odd = true
-    for i in 1:desc.order
-        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
-        scale!(term, one(T) / T(i))
-        mul!(term_next, term, temp)
-        term, term_next = term_next, term  # swap bindings — zero-cost, no copy
-        coeff = is_odd ? cosh_a0 : sinh_a0
-        _add_scaled!(sum, term, coeff)
-        is_odd = !is_odd
-    end
-
-    sum.c[1] = sinh_a0
-    sum.degree_mask[] |= UInt64(1)
-    return sum
-end
-
-function sinh!(result::CTPS{T}, ctps::CTPS{T}) where T
-    _check_descriptors(result, ctps)
-    a0 = cst(ctps)
-    sinh_a0 = Base.sinh(a0)
-    cosh_a0 = Base.cosh(a0)
-    desc = ctps.desc
-
-    (idx_temp, temp)      = _ctps_pooled_copy(ctps, desc)
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    # Capture the input before clearing an output that may share its storage.
-    _zero_active!(result)
-
-    (idx_term, term)      = _ctps_pooled(T, desc)
-    term.c[1] = one(T)
-    term.degree_mask[] = UInt64(1)
-
-    (idx_tn,   term_next) = _ctps_pooled(T, desc)
-
-    is_odd = true
-    for i in 1:desc.order
-        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
-        scale!(term, one(T) / T(i))
-        mul!(term_next, term, temp)
-        term, term_next = term_next, term
-        idx_term, idx_tn = idx_tn, idx_term # Keep pool ownership with its buffer.
-        coeff = is_odd ? cosh_a0 : sinh_a0
-        _add_scaled!(result, term, coeff)
-        is_odd = !is_odd
-    end
-
-    result.c[1] = sinh_a0
-    result.degree_mask[] |= UInt64(1)
-    _pool_release!(idx_temp, temp,      desc)
-    _pool_release!(idx_term, term,      desc)
-    _pool_release!(idx_tn,   term_next, desc)
-    return result
-end
-
-# hyperbolic cos
-function cosh(ctps::CTPS{T}) where T
-    a0 = cst(ctps)
-    sinh_a0 = Base.sinh(a0)
-    cosh_a0 = Base.cosh(a0)
-    desc = ctps.desc
-
-    temp = CTPS(ctps)
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    term      = _ctps_constant(one(T), desc)
-    term_next = _ctps_zero(T, desc)      # pre-allocated; swapped each iteration
-    sum       = _ctps_zero(T, desc)      # heap-allocated (returned)
-
-    is_odd = true
-    for i in 1:desc.order
-        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
-        scale!(term, one(T) / T(i))
-        mul!(term_next, term, temp)
-        term, term_next = term_next, term  # swap bindings — zero-cost, no copy
-        coeff = is_odd ? sinh_a0 : cosh_a0
-        _add_scaled!(sum, term, coeff)
-        is_odd = !is_odd
-    end
-
-    sum.c[1] = cosh_a0
-    sum.degree_mask[] |= UInt64(1)
-    return sum
-end
-
-function cosh!(result::CTPS{T}, ctps::CTPS{T}) where T
-    _check_descriptors(result, ctps)
-    a0 = cst(ctps)
-    sinh_a0 = Base.sinh(a0)
-    cosh_a0 = Base.cosh(a0)
-    desc = ctps.desc
-
-    (idx_temp, temp)      = _ctps_pooled_copy(ctps, desc)
-    temp.c[1] = zero(T)
-    temp.degree_mask[] &= ~UInt64(1)
-
-    # Capture the input before clearing an output that may share its storage.
-    _zero_active!(result)
-
-    (idx_term, term)      = _ctps_pooled(T, desc)
-    term.c[1] = one(T)
-    term.degree_mask[] = UInt64(1)
-
-    (idx_tn,   term_next) = _ctps_pooled(T, desc)
-
-    is_odd = true
-    for i in 1:desc.order
-        # Maintain h^i/i!; normalize before multiplication to limit intermediates.
-        scale!(term, one(T) / T(i))
-        mul!(term_next, term, temp)
-        term, term_next = term_next, term
-        idx_term, idx_tn = idx_tn, idx_term # Keep pool ownership with its buffer.
-        coeff = is_odd ? sinh_a0 : cosh_a0
-        _add_scaled!(result, term, coeff)
-        is_odd = !is_odd
-    end
-
-    result.c[1] = cosh_a0
-    result.degree_mask[] |= UInt64(1)
-    _pool_release!(idx_temp, temp,      desc)
-    _pool_release!(idx_term, term,      desc)
-    _pool_release!(idx_tn,   term_next, desc)
-    return result
+    s = _ctps_zero(T, desc)
+    c = _ctps_zero(T, desc)
+    _sincos_series!(s, c, ctps, false)
+    return s / c
 end

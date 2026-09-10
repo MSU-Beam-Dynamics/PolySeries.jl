@@ -19,7 +19,19 @@ First registered release.
   forms (an `order == 0` variable used to hit a `BoundsError`).
 - Minimum supported Julia version lowered to 1.10 (LTS).
 
+### Performance
+- `mul!` visits only the multiplication schedules whose degree pairs are
+  active in the operands (previously it scanned all of them); sparse
+  products are 1.3–2.2× faster and the output degree mask is computed in
+  O(active degrees) instead of O(order²).
+- `exp`, `sin`, `cos`, `sinh`, `cosh` and `tan` use a degree-block (Euler
+  operator) recurrence: one block convolution per function instead of one
+  series multiplication per order, 2–5× less arithmetic on dense arguments
+  and far less per-call overhead on sparse ones. Results keep the sparsity
+  structure of the argument (an even argument yields only even degrees).
+
 ### Added
+- `sincos!(s, c, p)` computes both trigonometric series in one pass.
 - `PSDesc` rejects descriptors whose index tables would exceed
   `PolySeries.MAX_DESCRIPTOR_BYTES[]` (default 2 GiB) instead of attempting
   the allocation.

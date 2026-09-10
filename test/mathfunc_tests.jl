@@ -360,3 +360,51 @@ end
         end
     end
 end
+
+@testset "sincos! and reachability of degree blocks" begin
+    desc = PSDesc(2, 6)
+    x = CTPS(0.0, 1, desc); y = CTPS(0.0, 2, desc)
+    allc(p) = [element(p, [Int(desc.polymap.map[i, v]) for v in 2:3]) for i in 1:desc.N]
+
+    f = 0.3 + 0.5 * x + 0.2 * y^2
+    s = CTPS(Float64, desc); c = CTPS(Float64, desc)
+    sincos!(s, c, f)
+    @test allc(s) ≈ allc(sin(f)) atol=1e-14
+    @test allc(c) ≈ allc(cos(f)) atol=1e-14
+    @test allc(s) ≈ allc(sin(0.3) * cos(f - 0.3) + cos(0.3) * sin(f - 0.3)) atol=1e-13
+    # Either output may alias the argument; the two outputs may not alias each other.
+    s2 = CTPS(f); c2 = CTPS(Float64, desc)
+    sincos!(s2, c2, s2)
+    @test allc(s2) ≈ allc(sin(f)) atol=1e-14
+    @test allc(c2) ≈ allc(cos(f)) atol=1e-14
+    c3 = CTPS(f); s3 = CTPS(Float64, desc)
+    sincos!(s3, c3, c3)
+    @test allc(c3) ≈ allc(cos(f)) atol=1e-14
+    @test_throws ArgumentError sincos!(s, s, f)
+    @test_throws DimensionMismatch sincos!(s, CTPS(Float64, PSDesc(2, 4)), f)
+    @test (@allocated sincos!(s, c, f)) == 0
+
+    # An even argument reaches only even degrees: the odd blocks of the result
+    # stay inactive instead of being written as zeros.
+    g = x^2 + y^2
+    even = UInt64(0b1010101)                        # degrees 0, 2, 4, 6
+    e = exp(g)
+    @test e.degree_mask[] == even
+    @test element(e, [2, 0]) ≈ 1.0 && element(e, [4, 0]) ≈ 0.5 && element(e, [2, 2]) ≈ 1.0
+    @test element(e, [6, 0]) ≈ 1 / 6 && element(e, [1, 0]) == 0.0 && element(e, [3, 0]) == 0.0
+    sh = sinh(g); ch = cosh(g)
+    @test sh.degree_mask[] == even && ch.degree_mask[] == even
+    @test element(sh, [2, 0]) ≈ 1.0 && element(sh, [6, 0]) ≈ 1 / 6 && element(sh, [4, 0]) == 0.0
+    @test element(ch, [4, 0]) ≈ 0.5 && element(ch, [2, 0]) == 0.0
+    out = CTPS(1.0, 1, desc)                        # stale full content is irrelevant
+    exp!(out, exp(out))
+    exp!(out, g)
+    @test out.degree_mask[] == even
+    @test allc(out) ≈ allc(e) atol=1e-14
+    # Constant arguments produce constants with a degree-0 mask only.
+    k = CTPS(0.7, desc)
+    for h in (exp, sin, cos, sinh, cosh)
+        r = h(k)
+        @test r.degree_mask[] == UInt64(1) && cst(r) ≈ h(0.7)
+    end
+end

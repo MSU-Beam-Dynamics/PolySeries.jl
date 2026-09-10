@@ -117,6 +117,7 @@ in one expression is not supported.
 | `pow(f, n)` | `pow!(out, f, n)` | integer `n`; in-place form requires `n ≥ 0` |
 | `sin(f)` | `sin!(out, f)` | |
 | `cos(f)` | `cos!(out, f)` | |
+| — | `sincos!(s, c, f)` | both series in one pass, for the cost of one |
 | `tan(f)` | — | |
 | `asin(f)` | `asin!(out, f)` | real constant must have absolute value below 1; complex branch points ±1 are rejected |
 | `acos(f)` | `acos!(out, f)` | real constant must have absolute value below 1; complex branch points ±1 are rejected |
