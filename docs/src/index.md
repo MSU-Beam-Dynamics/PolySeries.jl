@@ -158,6 +158,8 @@ read through `cst` or `element` rather than indexed directly.
 To iterate over all monomials, `decomposite(i - 1, desc.nv)` returns the
 exponent vector `[degree, e₁, e₂, …, eₙ]` for storage index `i` (`1 ≤ i ≤ desc.N`);
 pass its tail to `element` to read the coefficient safely.
+Negative indices, nonpositive dimensions, and arguments whose `n + 1` or
+`dim + 1` would overflow `Int` raise `ArgumentError`.
 
 ## Zero-allocation patterns
 
@@ -287,4 +289,3 @@ including comparisons with analytic derivatives.
 - [Tutorial](tutorial.md) — step-by-step examples
 - [API Reference](api.md) — complete function and type documentation
 - `examples/` — runnable Julia scripts
-- `benchmarks/` — performance measurement scripts

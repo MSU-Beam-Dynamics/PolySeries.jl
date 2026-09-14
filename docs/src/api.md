@@ -135,7 +135,12 @@ release!
 ```
 
 A `PSWorkspace` belongs to one caller at a time. The `@tpsa` macro releases all
-temporaries it borrows, including when evaluation throws.
+temporaries it borrows, including when evaluation throws. Its coefficient type
+must match the polynomials: use `PSWorkspace(desc, 16, ComplexF64)` for complex
+coefficients or `PSWorkspace(desc, 16, Float32)` for single precision. Omitting
+the type preserves the `Float64` default. Borrowing a slot does not allocate;
+elementary functions may still allocate internal scratch buffers for types
+other than `Float64`.
 
 ## Index decomposition
 

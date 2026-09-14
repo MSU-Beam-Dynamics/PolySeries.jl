@@ -424,7 +424,35 @@ end
     @test allc(a / b) ≈ allc(a * inv(b)) atol=1e-13
     @test allc(3.0 / b) ≈ allc(3.0 * inv(b)) atol=1e-14
     @test allc(tan!(out, a)) ≈ allc(tan(a)) atol=1e-13
-    @test allc(tan(a) * cos(a)) ≈ allc(sin(a)) atol=1e-13
+    # Near the pole at π/2, tan(a)*cos(a) cancels large coefficients, so
+    # testing its small residual with an absolute tolerance is ill-conditioned.
+    # Independently generate tan's derivative polynomials with exact integers:
+    # P₀(t)=t, Pₙ₊₁(t)=(1+t²)Pₙ′(t). Only the scalar tan uses BigFloat.
+    reference = setprecision(BigFloat, 256) do
+        t = tan(BigFloat(1.5))
+        derivative = BigInt[0, 1] # ascending powers of t
+        coeffs = BigFloat[]
+        for n in 0:desc.order
+            push!(coeffs, evalpoly(t, derivative) / factorial(big(n)))
+            next = zeros(BigInt, length(derivative) + 1)
+            for k in 1:length(derivative)-1
+                next[k] += k * derivative[k + 1]
+                next[k + 2] += k * derivative[k + 1]
+            end
+            derivative = next
+        end
+        # Substitute h=x+y²/2 into Σₙ tan⁽ⁿ⁾(1.5)hⁿ/n! analytically.
+        map(1:desc.N) do idx
+            i, j = Int(desc.polymap.map[idx, 2]), Int(desc.polymap.map[idx, 3])
+            isodd(j) && return 0.0
+            m = j ÷ 2
+            Float64(coeffs[i + m + 1] * binomial(big(i + m), m) / big(2)^m)
+        end
+    end
+    # Check every coefficient; a vector norm could hide errors in small terms.
+    for actual in (allc(tan(a)), allc(tan!(out, a)))
+        @test all(isapprox.(actual, reference; rtol=32eps(Float64), atol=0.0))
+    end
 
     # Aliasing: every argument position.
     p = CTPS(b); inv!(p, p);          @test allc(p) ≈ allc(inv(b)) atol=1e-14
@@ -484,7 +512,7 @@ end
     cdesc = PSDesc(1, 3)
     cx = CTPS(0.0 + 0.0im, 1, cdesc)
     cr = CTPS(ComplexF64, cdesc)
-    cws = PSWorkspace(cdesc, 4)
+    cws = PSWorkspace(cdesc, 4, ComplexF64)
     @tpsa cws cr = (1.0 + 2.0im) * cx
     @test element(cr, [1]) == 1.0 + 2.0im
     @tpsa cws cr = cx / (2.0im) - (0.5 + 0.5im)

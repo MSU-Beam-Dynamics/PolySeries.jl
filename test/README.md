@@ -33,13 +33,16 @@ include("test/polymap_tests.jl")
 - **threadsafe_tests.jl**: Tests for thread safety and descriptor caching
 - **documentation_examples_tests.jl**: Extracts executable README blocks and runs them and every `examples/*.jl` script in-process, each in its own module with captured output (runs last so the Enzyme example reuses the compiled extension)
 - **degree_mask_tests.jl**, **arithmetic_tests.jl**: Sparse degree gaps and poisoned inactive storage
-- **order_limits_tests.jl**, **math_alias_tests.jl**, **log_pool_tests.jl**: Representation limits, aliasing, and pool cleanup on failure
+- **order_limits_tests.jl**, **math_alias_tests.jl**, **log_pool_tests.jl**, **trig_pool_tests.jl**: Representation limits, aliasing, and pool cleanup on failure
 - **enzyme_alias_tests.jl**: Forward/reverse AD through aliased in-place math (included from `ext_enzyme_test.jl`, as are the other `enzyme_*` files and `repro_prebuilt_zero_ad.jl`)
 - **complex_branch_tests.jl**, **enzyme_complex_branch_tests.jl**: Branch-cut selection for complex expansion centres
+- **real_inverse_trig_tests.jl**, **enzyme_real_inverse_trig_tests.jl**: High-precision references near ±1, allocating/in-place/aliased forms, and forward/reverse sensitivities of the linear coefficient
 - **descriptor_ownership_tests.jl**: Task-local default descriptors and workspace ownership (included from `threadsafe_tests.jl`)
 - **release_edge_tests.jl**: Singular square-root centers and negative-power overflow
 - **error_path_tests.jl**: Guard rails (constructor, accessor, domain, workspace, composition). `@test_broken` lines are pre-release targets that flip to "Unexpected Pass" when the corresponding fix lands
-- **macro_tests.jl**, **composition_tests.jl**: Expression lowering, workspace reuse, and composition
+- **macro_tests.jl**, **composition_tests.jl**: Expression lowering, single evaluation in source order, typed workspace reuse, and composition
+- **macro_scalar_tests.jl**, **enzyme_macro_scalar_tests.jl**: Scalar promotion, cancellation, literal/dynamic powers, allocation checks, and forward/reverse macro derivatives
+- **macro_timing_tests.jl**, **enzyme_macro_timing_tests.jl**: N-ary operand evaluation, mutation and parentheses, temporary lifetime/cleanup, allocation checks, and reverse derivatives with runtime activity
 - **ext_enzyme_test.jl**: Enzyme regressions, including zero coefficients, prebuilt inputs, descriptor changes, and aliasing
 - **enzyme_normalized_series_tests.jl**: Forward and reverse sensitivities of scaled high-order coefficients; ordinary, in-place, and aliased coefficient checks are in **order_limits_tests.jl**
 

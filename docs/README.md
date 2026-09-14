@@ -14,4 +14,3 @@ Official package documentation for PolySeries.jl (Truncated Power Series Algebra
 
 - [`../examples/`](../examples/) — self-contained runnable Julia scripts
 - [`../test/`](../test/) — full test suite (from the package root, run `julia --project=. -e 'using Pkg; Pkg.test()'`)
-- [`../benchmarks/`](../benchmarks/) — performance measurement scripts

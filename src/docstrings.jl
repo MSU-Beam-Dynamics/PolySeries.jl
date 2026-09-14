@@ -24,9 +24,11 @@ operands with different descriptors or a substitution map of the wrong length.
 """ PSDesc
 
 @doc """
-    PSWorkspace(desc::PSDesc, n::Int=32)
+    PSWorkspace(desc::PSDesc, n::Int=32, T::Type=Float64)
+    PSWorkspace{T}(desc::PSDesc, n::Int=32)
 
-Create a pool of `n` reusable `CTPS{Float64}` temporaries for `desc`. A
+Create a pool of `n` reusable `CTPS{T}` temporaries for `desc`. Use the same
+coefficient type as the polynomials in `@tpsa` expressions. A
 workspace must not be shared by concurrent calls.
 """ PSWorkspace
 

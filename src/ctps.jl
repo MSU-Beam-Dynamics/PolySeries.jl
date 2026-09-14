@@ -1231,30 +1231,32 @@ end
 #   release!(ws, t1)                 # return slot to pool (active range zeroed)
 #
 # Notes:
-#   • CTPS slots are type Float64 only (same as DescPool).  For other element
-#     types fall back to heap via _ctps_zero.
-#   • `borrow!` returns a CTPS{Float64} backed by a pre-allocated buffer.
+#   • Slots default to Float64; pass T as the third constructor argument for
+#     a workspace of CTPS{T} objects (e.g. ComplexF64 or Float32).
+#   • `borrow!` returns a CTPS{T} backed by a pre-allocated buffer.
 #   • `release!` zeros only the active degree range — O(active_range), not O(N).
 #   • The workspace is NOT thread-safe: create one per concurrent task or protect access.
-mutable struct PSWorkspace
+mutable struct PSWorkspace{T}
     desc     :: PSDesc
-    bufs     :: Vector{CTPS{Float64}}   # pre-allocated CTPS objects
+    bufs     :: Vector{CTPS{T}}         # pre-allocated CTPS objects
     avail    :: Vector{Int}             # stack of available indices
     sp       :: Int                     # stack pointer (sp==length(bufs) → all free)
     id_to_idx :: Dict{UInt64, Int}      # objectid(ctps.c) → slot index, O(1) release
     inuse    :: BitVector               # slot currently borrowed (rejects double release)
 end
 
-function PSWorkspace(desc::PSDesc, n::Int = 32)
+function PSWorkspace(desc::PSDesc, n::Int = 32, ::Type{T} = Float64) where T
     n >= 1 || throw(ArgumentError("PSWorkspace needs at least one slot"))
-    bufs  = [CTPS{Float64}(zeros(Float64, desc.N), desc, Ref(UInt64(0)))
+    bufs  = [CTPS{T}(zeros(T, desc.N), desc, Ref(UInt64(0)))
              for _ in 1:n]
     avail = collect(1:n)
     id_to_idx = Dict{UInt64, Int}(objectid(bufs[i].c) => i for i in 1:n)
     return PSWorkspace(desc, bufs, avail, n, id_to_idx, falses(n))
 end
 
-"""    borrow!(ws::PSWorkspace) -> CTPS{Float64}
+PSWorkspace{T}(desc::PSDesc, n::Int = 32) where T = PSWorkspace(desc, n, T)
+
+"""    borrow!(ws::PSWorkspace{T}) -> CTPS{T}
 
 Obtain a zero CTPS from the workspace without heap allocation.
 Must be paired with `release!(ws, ctps)` when done."""
@@ -1266,11 +1268,11 @@ Must be paired with `release!(ws, ctps)` when done."""
     return ws.bufs[idx]
 end
 
-"""    release!(ws::PSWorkspace, ctps::CTPS{Float64})
+"""    release!(ws::PSWorkspace{T}, ctps::CTPS{T})
 
 Return a borrowed CTPS slot to the workspace.
 Zeros only the active degree range before returning — O(active_range)."""
-@inline function release!(ws::PSWorkspace, ctps::CTPS{Float64})
+@inline function release!(ws::PSWorkspace{T}, ctps::CTPS{T}) where T
     ctps.desc === ws.desc || throw(DimensionMismatch("CTPS and workspace descriptors must match"))
     idx = get(ws.id_to_idx, objectid(ctps.c), 0)
     idx != 0 || throw(ArgumentError("CTPS was not borrowed from this workspace"))
@@ -1280,7 +1282,7 @@ Zeros only the active degree range before returning — O(active_range)."""
     if dm != 0
         (s, e) = active_range_bounds(ws.desc, dm)
         buf = ctps.c
-        @inbounds @simd for i in s:e; buf[i] = 0.0; end
+        @inbounds @simd for i in s:e; buf[i] = zero(T); end
         ctps.degree_mask[] = UInt64(0)
     end
     ws.sp += 1
@@ -1982,15 +1984,23 @@ end
 # its partner only up to degree order-1, so when a single function is wanted
 # the companion's top block — by far the largest — is skipped (`s_top`/`c_top`
 # false); the companion's mask then omits that degree.
-function _sincos_series!(s::CTPS{T}, c::CTPS{T}, f::CTPS{T}, hyperbolic::Bool;
+# Evaluate both scalar centers before borrowing scratch storage or writing an
+# output. Passing the values into the recurrence avoids evaluating them twice.
+@inline function _sincos_centers(a0::T, hyperbolic::Bool) where T
+    s0 = T(hyperbolic ? Base.sinh(a0) : Base.sin(a0))
+    c0 = T(hyperbolic ? Base.cosh(a0) : Base.cos(a0))
+    return s0, c0
+end
+
+function _sincos_series!(s::CTPS{T}, c::CTPS{T}, f::CTPS{T}, hyperbolic::Bool,
+                         s0::T, c0::T;
                          s_top::Bool=true, c_top::Bool=true) where T
     desc  = f.desc
     order = desc.order
     fc, sc, cc = f.c, s.c, c.c
     hmask = f.degree_mask[] & ~UInt64(1)
-    a0 = cst(f)
-    sc[1] = hyperbolic ? Base.sinh(a0) : Base.sin(a0)
-    cc[1] = hyperbolic ? Base.cosh(a0) : Base.cos(a0)
+    sc[1] = s0
+    cc[1] = c0
     sign  = hyperbolic ? one(T) : -one(T)
     reach = UInt64(1)
     for k in 1:order
@@ -2205,12 +2215,16 @@ function _sincos_into!(s::CTPS{T}, c::CTPS{T}, ctps::CTPS{T}, hyperbolic::Bool) 
     _check_descriptors(c, ctps)
     s.c === c.c && throw(ArgumentError("sincos!: the two outputs must not share storage"))
     desc = ctps.desc
+    s0, c0 = _sincos_centers(cst(ctps), hyperbolic)
     if s.c === ctps.c || c.c === ctps.c
         (idx, src) = _ctps_pooled_copy(ctps, desc)
-        _sincos_series!(s, c, src, hyperbolic)
-        _pool_release!(idx, src, desc)
+        try
+            _sincos_series!(s, c, src, hyperbolic, s0, c0)
+        finally
+            _pool_release!(idx, src, desc)
+        end
     else
-        _sincos_series!(s, c, ctps, hyperbolic)
+        _sincos_series!(s, c, ctps, hyperbolic, s0, c0)
     end
     return nothing
 end
@@ -2229,28 +2243,39 @@ function _single_sincos!(result::CTPS{T}, ctps::CTPS{T}, want_sin::Bool, hyperbo
     ctps = _ad_input(ctps)
     _check_descriptors(result, ctps)
     desc = ctps.desc
+    s0, c0 = _sincos_centers(cst(ctps), hyperbolic)
     (idx_other, other) = _ctps_pooled(T, desc)
-    if result.c === ctps.c
-        (idx_src, src) = _ctps_pooled_copy(ctps, desc)
-        want_sin ? _sincos_series!(result, other, src, hyperbolic; c_top=false) :
-                   _sincos_series!(other, result, src, hyperbolic; s_top=false)
-        _pool_release!(idx_src, src, desc)
-    else
-        want_sin ? _sincos_series!(result, other, ctps, hyperbolic; c_top=false) :
-                   _sincos_series!(other, result, ctps, hyperbolic; s_top=false)
+    try
+        if result.c === ctps.c
+            (idx_src, src) = _ctps_pooled_copy(ctps, desc)
+            try
+                want_sin ? _sincos_series!(result, other, src, hyperbolic, s0, c0; c_top=false) :
+                           _sincos_series!(other, result, src, hyperbolic, s0, c0; s_top=false)
+            finally
+                _pool_release!(idx_src, src, desc)
+            end
+        else
+            want_sin ? _sincos_series!(result, other, ctps, hyperbolic, s0, c0; c_top=false) :
+                       _sincos_series!(other, result, ctps, hyperbolic, s0, c0; s_top=false)
+        end
+    finally
+        _pool_release!(idx_other, other, desc)
     end
-    _pool_release!(idx_other, other, desc)
     return result
 end
 
 function _single_sincos(ctps::CTPS{T}, want_sin::Bool, hyperbolic::Bool) where T
     ctps = _ad_input(ctps)
     desc = ctps.desc
+    s0, c0 = _sincos_centers(cst(ctps), hyperbolic)
     result = _ctps_zero(T, desc)
     (idx_other, other) = _ctps_pooled(T, desc)   # heap under AD, pool otherwise
-    want_sin ? _sincos_series!(result, other, ctps, hyperbolic; c_top=false) :
-               _sincos_series!(other, result, ctps, hyperbolic; s_top=false)
-    _pool_release!(idx_other, other, desc)
+    try
+        want_sin ? _sincos_series!(result, other, ctps, hyperbolic, s0, c0; c_top=false) :
+                   _sincos_series!(other, result, ctps, hyperbolic, s0, c0; s_top=false)
+    finally
+        _pool_release!(idx_other, other, desc)
+    end
     return result
 end
 
@@ -2379,7 +2404,9 @@ function sqrt!(result::CTPS{T}, ctps::CTPS{T}) where T
     return _sqrt_series!(result, y0, ctps.c, ctps.degree_mask[], one(T), ctps.desc)
 end
 
-@inline _asin_root(a0) = Base.sqrt(one(a0) - a0 * a0)
+# Factor before rounding: subtracting the rounded square loses relative
+# accuracy near the real branch points at ±1.
+@inline _asin_root(a0) = Base.sqrt((one(a0) - a0) * (one(a0) + a0))
 @inline function _asin_root(a0::Complex)
     a, b = reim(a0)
     # sqrt(1-z)*sqrt(1+z) selects the derivative branch of Base.asin.
@@ -2425,12 +2452,19 @@ function tan!(result::CTPS{T}, ctps::CTPS{T}) where T
     ctps = _ad_input(ctps)
     _check_descriptors(result, ctps)
     desc = ctps.desc
+    s0, c0 = _sincos_centers(cst(ctps), false)
     (idx_s, s) = _ctps_pooled(T, desc)
-    (idx_c, c) = _ctps_pooled(T, desc)
-    _sincos_series!(s, c, ctps, false)        # reads ctps completely before result is touched
-    _div_series!(result, s, c)
-    _pool_release!(idx_c, c, desc)
-    _pool_release!(idx_s, s, desc)
+    try
+        (idx_c, c) = _ctps_pooled(T, desc)
+        try
+            _sincos_series!(s, c, ctps, false, s0, c0) # read ctps before touching result
+            _div_series!(result, s, c)
+        finally
+            _pool_release!(idx_c, c, desc)
+        end
+    finally
+        _pool_release!(idx_s, s, desc)
+    end
     return result
 end
 
@@ -2562,4 +2596,3 @@ function pow!(result::CTPS{T}, ctps::CTPS{T}, b::Int) where T
     _pool_release!(idx_buf,  buf,  desc)
     return result
 end
-

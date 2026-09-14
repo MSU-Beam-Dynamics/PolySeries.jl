@@ -36,7 +36,7 @@ end
     add!(out, b, T(a))
 end
 @inline function _tpsa_add!(out::CTPS{T}, a::Number, b::Number) where T
-    val = T(a) + T(b)
+    val = T(a + b)
     _zero_active!(out)
     out.c[1] = val
     out.degree_mask[] = _prunable_zero(val) ? UInt64(0) : UInt64(1)
@@ -57,7 +57,7 @@ end
     out.degree_mask[] = (m & ~UInt64(1)) | (_prunable_zero(out.c[1]) ? UInt64(0) : UInt64(1))
 end
 @inline function _tpsa_sub!(out::CTPS{T}, a::Number, b::Number) where T
-    val = T(a) - T(b)
+    val = T(a - b)
     _zero_active!(out)
     out.c[1] = val
     out.degree_mask[] = _prunable_zero(val) ? UInt64(0) : UInt64(1)
@@ -73,7 +73,7 @@ end
     scale!(out, b, T(a))
 end
 @inline function _tpsa_mul!(out::CTPS{T}, a::Number, b::Number) where T
-    val = T(a) * T(b)
+    val = T(a * b)
     _zero_active!(out)
     out.c[1] = val
     out.degree_mask[] = _prunable_zero(val) ? UInt64(0) : UInt64(1)
@@ -83,14 +83,16 @@ end
     div!(out, a, b)
 end
 @inline function _tpsa_div!(out::CTPS{T}, a::CTPS{T}, b::Number) where T
-    scale!(out, a, one(T) / T(b))
+    divisor = T(b)
+    iszero(divisor) && throw(DomainError(divisor, "division by zero"))
+    scale!(out, a, one(T) / divisor)
 end
 @inline function _tpsa_div!(out::CTPS{T}, a::Number, b::CTPS{T}) where T
     inv!(out, b)
     scale!(out, T(a))
 end
 @inline function _tpsa_div!(out::CTPS{T}, a::Number, b::Number) where T
-    val = T(a) / T(b)
+    val = T(a / b)
     _zero_active!(out)
     out.c[1] = val
     out.degree_mask[] = _prunable_zero(val) ? UInt64(0) : UInt64(1)
@@ -100,7 +102,7 @@ end
     scale!(out, a, T(-1))
 end
 @inline function _tpsa_neg!(out::CTPS{T}, a::Number) where T
-    val = -T(a)
+    val = T(-a)
     _zero_active!(out)
     out.c[1] = val
     out.degree_mask[] = _prunable_zero(val) ? UInt64(0) : UInt64(1)
@@ -109,8 +111,19 @@ end
 @inline function _tpsa_pow!(out::CTPS{T}, a::CTPS{T}, b::Int) where T
     pow!(out, a, b)
 end
-@inline function _tpsa_pow!(out::CTPS{T}, a::Number, b::Int) where T
-    val = T(a)^b
+@inline function _tpsa_pow!(out::CTPS{T}, a::Number, b::Number) where T
+    val = T(a^b)
+    _zero_active!(out)
+    out.c[1] = val
+    out.degree_mask[] = _prunable_zero(val) ? UInt64(0) : UInt64(1)
+end
+
+# Julia lowers literal integer powers through literal_pow (e.g. 2^-1 is
+# valid, while 2^n with n == -1 throws). Keep that distinction for scalars;
+# polynomial powers still use the existing nonnegative in-place kernel.
+@inline _tpsa_literal_pow!(out::CTPS{T}, a::CTPS{T}, n::Int) where T = pow!(out, a, n)
+@inline function _tpsa_literal_pow!(out::CTPS{T}, a::Number, n::Int) where T
+    val = T(Base.literal_pow(^, a, Val(n)))
     _zero_active!(out)
     out.c[1] = val
     out.degree_mask[] = _prunable_zero(val) ? UInt64(0) : UInt64(1)
@@ -147,22 +160,27 @@ end
 @inline _tpsa_scalar(::Val{:*}, a, b) = a * b
 @inline _tpsa_scalar(::Val{:/}, a, b) = a / b
 @inline _tpsa_scalar(::Val{:^}, a, b) = a ^ b
+@inline _tpsa_scalar(::Val{:literal_pow}, a, b) = Base.literal_pow(^, a, Val(b))
 @inline _tpsa_scalar(::Val{:-}, a)    = -a
 for f in (:sin, :cos, :tan, :exp, :log, :sqrt, :sinh, :cosh, :asin, :acos)
     @eval @inline _tpsa_scalar(::Val{$(QuoteNode(f))}, a) = $f(a)
 end
 
 # The storage for an intermediate: the evaluated number, or a borrowed slot.
+@inline _tpsa_borrow(ws::PSWorkspace{T}, ::CTPS{T}) where T = borrow!(ws)
+@noinline function _tpsa_borrow(ws::PSWorkspace, p::CTPS)
+    throw(ArgumentError("workspace coefficient type must match the polynomial; construct PSWorkspace(desc, n, $(eltype(p.c)))"))
+end
 @inline _tpsa_slot(ws, op::Val, a::Number, b::Number) = _tpsa_scalar(op, a, b)
-@inline _tpsa_slot(ws, op::Val, a, b)                  = borrow!(ws)
+@inline _tpsa_slot(ws, op::Val, a, b)                  = _tpsa_borrow(ws, a isa CTPS ? a : b)
 @inline _tpsa_slot(ws, op::Val, a::Number)             = _tpsa_scalar(op, a)
-@inline _tpsa_slot(ws, op::Val, a)                     = borrow!(ws)
+@inline _tpsa_slot(ws, op::Val, a)                     = _tpsa_borrow(ws, a)
 
 @inline _tpsa_release!(ws, t::CTPS) = release!(ws, t)
 @inline _tpsa_release!(ws, ::Number) = nothing
 
 # A scalar intermediate was already evaluated by _tpsa_slot: nothing to do.
-for helper in (:_tpsa_add!, :_tpsa_sub!, :_tpsa_mul!, :_tpsa_div!, :_tpsa_pow!)
+for helper in (:_tpsa_add!, :_tpsa_sub!, :_tpsa_mul!, :_tpsa_div!, :_tpsa_pow!, :_tpsa_literal_pow!)
     @eval @inline $helper(out::Number, a::Number, b::Number) = out
 end
 @inline _tpsa_neg!(out::Number, a::Number) = out
@@ -211,27 +229,21 @@ end
 #   result_expr  — expression holding the result
 #   is_borrow    — true if the caller is responsible for releasing result_expr
 function _tpsa_lower_expr(ast, ws_sym, stmts, lhs_sym, temporaries)
-    if _tpsa_is_leaf(ast)
-        return (esc(ast), false)
+    # Snapshot leaves as they are encountered, including symbols and opaque
+    # calls. Reusing the original expression for slot selection and arithmetic
+    # would evaluate it twice; delaying it could reorder it after later calls.
+    function bind_leaf(expr)
+        value = gensym("tpsa_operand")
+        push!(stmts, :(local $value = $(esc(expr))))
+        return (value, false)
     end
-
-    # N-ary + or * → fold left into binary pairs, then lower
-    if ast isa Expr && ast.head == :call
-        f  = ast.args[1]
-        na = length(ast.args) - 1
-        if (f == :+ || f == :* || f == :-) && na > 2
-            # fold: (a ⊕ b ⊕ c ⊕ d) → ((a ⊕ b) ⊕ c) ⊕ d
-            folded = Expr(:call, f, ast.args[2], ast.args[3])
-            for i in 4:length(ast.args)
-                folded = Expr(:call, f, folded, ast.args[i])
-            end
-            return _tpsa_lower_expr(folded, ws_sym, stmts, lhs_sym, temporaries)
-        end
+    if _tpsa_is_leaf(ast)
+        return bind_leaf(ast)
     end
 
     if !(ast isa Expr && ast.head == :call)
         # Unknown expr shape: treat as leaf
-        return (esc(ast), false)
+        return bind_leaf(ast)
     end
 
     f  = ast.args[1]
@@ -249,13 +261,13 @@ function _tpsa_lower_expr(ast, ws_sym, stmts, lhs_sym, temporaries)
     # Emit one operation: its storage (lhs, a borrowed slot, or — decided at
     # run time — a plain number), the ownership flag, the in-place call, and
     # the release of any operands that were intermediates.
-    function emit(op::Symbol, helper::Symbol, operands, owned)
-        if lhs_sym !== nothing
-            push!(stmts, :($helper($lhs_sym, $(operands...))))
+    function emit(op::Symbol, helper::Symbol, operands, owned; destination=lhs_sym)
+        if destination !== nothing
+            push!(stmts, :($helper($destination, $(operands...))))
             for (e, o) in zip(operands, owned)
                 maybe_release!(e, o)
             end
-            return (lhs_sym, false)
+            return (destination, false)
         end
         t    = gensym("tpsa")
         live = gensym("tpsa_live")
@@ -274,7 +286,20 @@ function _tpsa_lower_expr(ast, ws_sym, stmts, lhs_sym, temporaries)
     binary = Dict(:+ => :_tpsa_add!, :- => :_tpsa_sub!, :* => :_tpsa_mul!, :/ => :_tpsa_div!)
     unary  = (:sin, :cos, :tan, :exp, :log, :sqrt, :sinh, :cosh, :asin, :acos)
 
-    if na == 2 && haskey(binary, f)
+    if na > 2 && f in (:+, :-, :*)
+        # Julia evaluates all arguments of a call before applying the operator.
+        # Keep polynomial references (not coefficient copies), and keep owned
+        # argument temporaries alive until used. Explicitly parenthesized calls
+        # are lowered recursively and therefore retain their own timing.
+        args = [lower(arg) for arg in ast.args[2:end]]
+        (ea, ta) = args[1]
+        for i in 2:length(args)
+            (eb, tb) = args[i]
+            destination = i == length(args) ? lhs_sym : nothing
+            (ea, ta) = emit(f, binary[f], (ea, eb), (ta, tb); destination)
+        end
+        return (ea, ta)
+    elseif na == 2 && haskey(binary, f)
         (ea, ta) = lower(ast.args[2])
         (eb, tb) = lower(ast.args[3])
         return emit(f, binary[f], (ea, eb), (ta, tb))
@@ -283,7 +308,10 @@ function _tpsa_lower_expr(ast, ws_sym, stmts, lhs_sym, temporaries)
         return emit(:-, :_tpsa_neg!, (ea,), (ta,))
     elseif f == :^ && na == 2
         (ea, ta) = lower(ast.args[2])
-        n_expr   = esc(ast.args[3])           # exponent: literal or variable, never owned
+        if ast.args[3] isa Int
+            return emit(:literal_pow, :_tpsa_literal_pow!, (ea, ast.args[3]), (ta, false))
+        end
+        (n_expr, _) = bind_leaf(ast.args[3])  # exponent is evaluated once, never owned
         return emit(:^, :_tpsa_pow!, (ea, n_expr), (ta, false))
     elseif na == 1 && f in unary
         (ea, ta) = lower(ast.args[2])
@@ -291,7 +319,7 @@ function _tpsa_lower_expr(ast, ws_sym, stmts, lhs_sym, temporaries)
     else
         # Unknown function call: treat as an atomic leaf value (evaluated as
         # ordinary, possibly allocating, code).
-        return (esc(ast), false)
+        return bind_leaf(ast)
     end
 end
 
@@ -303,16 +331,26 @@ end
 Compile a TPSA arithmetic expression into zero-allocation in-place code,
 writing the result directly into the pre-allocated CTPS `lhs`.
 
-Temporaries are borrowed from `ws::PSWorkspace` and released automatically
+Temporaries are borrowed from `ws::PSWorkspace{T}`, with the same coefficient
+type as the polynomials, and released automatically
 when no longer needed, including when evaluation throws. The output may be
 partially written on failure. The number of simultaneous borrows equals the peak
-number of live intermediates in `expr`.
+number of live intermediates in `expr`. Operands are evaluated once in source
+order. All operands of an unparenthesized sum or product are evaluated before
+combining them; explicit parentheses retain Julia's evaluation timing.
+Argument temporaries remain live until that call uses them, which may require
+more slots than an explicitly nested expression.
+Use `PSWorkspace(desc, n, ComplexF64)` for complex intermediates; the
+default workspace type is `Float64`. Elementary functions may allocate their
+own scratch buffers for coefficient types other than `Float64`.
 
 # Supported operations
 `+`, `-`, `*`, `/`, unary `-`, `^n` (Int), `sin`, `cos`, `tan`, `exp`, `log`,
 `sqrt`, `sinh`, `cosh`, `asin`, `acos`. Scalar (`Number`) values may appear as
 either operand to `+`, `-`, `*`, `/`, and as arguments to the supported unary
-functions; a sub-expression whose operands are all numbers is evaluated as a
+functions; scalar operations use Julia's ordinary arithmetic and literal-power
+semantics, converting the result to the output coefficient type when stored.
+A sub-expression whose operands are all numbers is evaluated as a
 number and borrows no slot, so `cos(μ)*x` is a single `scale!` and complex
 scalars reach a complex `lhs` intact. Any other call is evaluated as an
 ordinary (allocating) expression.

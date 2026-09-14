@@ -17,11 +17,16 @@ end
 """
     decomposite(n::Int, dim::Int) -> Vector{Int}
 
-Decomposes an integer n into a vector of length dim + 1 representing exponents.
+Decomposes a zero-based monomial index `n` into a vector of length `dim + 1`
+representing exponents in graded order.
 
 # Arguments
-- `n::Int`: The integer to decompose.
-- `dim::Int`: The number of variables (dimensions).
+- `n::Int`: A nonnegative index with `n + 1` representable as `Int`.
+- `dim::Int`: A positive number of variables with `dim + 1` representable as `Int`.
+
+Invalid arguments raise `ArgumentError` before allocating the result. Very large
+multivariate indices can raise `OverflowError` if an internal binomial
+coefficient exceeds `Int`; intermediate arithmetic is not allowed to wrap.
 
 # Returns
 - `Vector{Int}`: A vector of length dim + 1 where the first element is the total degree 
@@ -50,7 +55,14 @@ julia> PolySeries.decomposite(3, 2)
  0
 ```
 """
-function decomposite(n::Int, dim::Int)    
+function decomposite(n::Int, dim::Int)
+    0 <= n < typemax(Int) ||
+        throw(ArgumentError("Monomial index must be nonnegative and n + 1 must fit in Int, got $n"))
+    1 <= dim < typemax(Int) ||
+        throw(ArgumentError("Dimension must be positive and dim + 1 must fit in Int, got $dim"))
+    # In one variable the index is the exponent; avoid a linear search even
+    # for the largest supported index.
+    dim == 1 && return [n, n]
     result = zeros(Int, dim + 1)  # Return Vector{Int}, not Vector{Float64}
     itemp = n + 1
     for i in dim:-1:1

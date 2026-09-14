@@ -5,6 +5,17 @@
 First registered release.
 
 ### Changed
+- `decomposite` rejects negative indices, nonpositive dimensions, and overflowing
+  index/vector-length increments before allocation. One-variable decomposition
+  directly returns the exponent, including for large valid indices.
+- Real `asin`/`acos` Taylor coefficients retain precision near ±1 by factoring
+  the square-root argument before evaluation; complex branch selection is unchanged.
+- `@tpsa` evaluates all operands of an unparenthesized sum or product before
+  combining them, preserving Julia's timing when a later operand mutates a polynomial.
+- Scalar expressions in `@tpsa` calculate before converting to the output
+  coefficient type, preserving cancellation and Julia's literal-power semantics.
+- Polynomial division by a zero scalar through `@tpsa` throws `DomainError`
+  before modifying the output, matching ordinary polynomial division.
 - `mul!(out, a, b)` is now a method of `LinearAlgebra.mul!` and returns `out`
   (previously a package-local function returning `nothing`), so
   `using PolySeries, LinearAlgebra` no longer produces an export conflict.
@@ -33,6 +44,10 @@ First registered release.
   argument yields only even degrees). `asin!`/`acos!` no longer allocate.
 
 ### Added
+- `PSWorkspace(desc, n, T)` and `PSWorkspace{T}(desc, n)` preallocate typed
+  temporaries for complex and other coefficient types; the default remains
+  `Float64`. `@tpsa` evaluates each operand once in source order and reports
+  incompatible workspace types before borrowing.
 - `sincos!(s, c, p)` computes both trigonometric series in one pass;
   `tan!`, `inv!` and `div!` complete the in-place API.
 - `@tpsa` supports `/`, `tan`, `asin`, `acos`, and `Number` (including

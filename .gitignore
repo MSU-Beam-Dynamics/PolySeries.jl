@@ -32,5 +32,6 @@ dev_scripts/
 agent/
 Manifest.toml
 
-# Benchmark skip log, regenerated on every run.
-benchmarks/benchmark_skips.log
+# Performance measurement scripts and their results: development tooling with
+# its own environment (GTPSA, BenchmarkTools), not part of the package.
+benchmarks/

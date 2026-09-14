@@ -5,10 +5,13 @@ using Enzyme
 
 include("enzyme_zero_tests.jl")
 include("enzyme_complex_branch_tests.jl")
+include("enzyme_real_inverse_trig_tests.jl")
 include("enzyme_normalized_series_tests.jl")
 include("enzyme_prebuilt_tests.jl")
 include("repro_prebuilt_zero_ad.jl")
 include("enzyme_descriptor_switch_tests.jl")
+include("enzyme_macro_scalar_tests.jl")
+include("enzyme_macro_timing_tests.jl")
 
 @testset "Enzyme with an explicitly owned descriptor" begin
     desc = PSDesc(1, 4)

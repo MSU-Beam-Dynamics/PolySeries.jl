@@ -282,6 +282,19 @@ element(out, [2, 0])
 
 ## 11. Complex Coefficients
 
+When using `@tpsa` with complex coefficients, give the workspace the same type:
+
+```@example complex_workspace
+using PolySeries
+desc = PSDesc(1, 3)
+ws = PSWorkspace(desc, 4, ComplexF64)
+x = CTPS(0.0 + 0.0im, 1, desc)
+out = CTPS(ComplexF64, desc)
+@tpsa ws out = x / (2im) - (0.5 + 0.5im)
+@assert cst(out) == -0.5 - 0.5im
+@assert element(out, [1]) == -0.5im
+```
+
 Any floating-point or complex floating-point type can be used as the
 coefficient type; the type is fixed by the constructor arguments:
 
@@ -300,4 +313,3 @@ the expansion center; see the API reference for the details near branch cuts.
 
 - See [API Reference](api.md) for the complete function reference.
 - See the `examples/` directory for self-contained runnable scripts.
-- Run the scripts in `benchmarks/` to measure performance on your own hardware.
