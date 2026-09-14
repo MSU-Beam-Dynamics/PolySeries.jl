@@ -34,4 +34,6 @@ Manifest.toml
 
 # Performance measurement scripts and their results: development tooling with
 # its own environment (GTPSA, BenchmarkTools), not part of the package.
-benchmarks/
+benchmarks/*
+!benchmarks/benchmark_rebuild.jl
+!benchmarks/rebuild_results.csv

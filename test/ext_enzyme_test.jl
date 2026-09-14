@@ -12,6 +12,8 @@ include("repro_prebuilt_zero_ad.jl")
 include("enzyme_descriptor_switch_tests.jl")
 include("enzyme_macro_scalar_tests.jl")
 include("enzyme_macro_timing_tests.jl")
+include("enzyme_product_rule_tests.jl")
+include("enzyme_exponential_rule_tests.jl")
 
 @testset "Enzyme with an explicitly owned descriptor" begin
     desc = PSDesc(1, 4)

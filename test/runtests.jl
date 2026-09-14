@@ -79,6 +79,8 @@ using PolySeries
 
     @testset "Composition" begin
         include("composition_tests.jl")
+        include("performance_strategy_tests.jl")
+        include("translation_reference_tests.jl")
     end
 
     @testset "Extension: PolySeriesEnzymeExt" begin

@@ -48,6 +48,8 @@ struct CompPlan
     par_idx    :: Vector{Int32}   # parent monomial index (1-based); element 1 unused
     par_var    :: Vector{Int8}    # which variable to multiply (1-based); element 1 unused
     n_children :: Vector{Int32}   # number of monomials j with par_idx[j] == i
+    first_child::Vector{Int32}    # descriptor-owned, read-only traversal links
+    next_sibling::Vector{Int32}
 end
 
 # Thread-local pool of pre-allocated Float64 coefficient buffers.
@@ -73,7 +75,7 @@ function descriptor_footprint_bytes(nv::Int, order::Int, N::Int, Nd::Vector{Int}
     return 4 * sched_entries +                    # MulSchedule2D k_local (Int32)
            sizeof(Int) * (order + 1) +           # degree-row schedule offsets
            Float64(N) * (nv + 1) +                # PolyMap exponent table (UInt8)
-           Float64(N) * 40 +                      # exp_to_idx Dict and CompPlan
+           Float64(N) * 48 +                      # exp_to_idx Dict and CompPlan
            Float64(N) * 8 * CTPS_POOL_SIZE        # one thread's Float64 pool
 end
 
@@ -364,7 +366,14 @@ function build_comp_plan(polymap::PolyMap, exp_to_idx::Dict, nv::Int, N::Int)
         n_children[pi] += Int32(1)
     end
 
-    return CompPlan(par_idx, par_var, n_children)
+    first_child = zeros(Int32,N)
+    next_sibling = zeros(Int32,N)
+    for i in N:-1:2
+        parent = Int(par_idx[i])
+        next_sibling[i] = first_child[parent]
+        first_child[parent] = Int32(i)
+    end
+    return CompPlan(par_idx, par_var, n_children, first_child, next_sibling)
 end
 
 # A permanent context ID fixes each polynomial's descriptor independently of
@@ -1460,6 +1469,14 @@ function mul!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
     mask1 = ctps1.degree_mask[]
     mask2 = ctps2.degree_mask[]
 
+    if within_autodiff() && T <: Union{Float32,Float64}
+        # _ad_input materializes all coefficient directions. Pool management,
+        # alias handling, and masks stay outside the convolution AD boundary.
+        _dense_product!(cr, c1, c2, desc)
+        result.degree_mask[] = typemax(UInt64) >> (63-order)
+        return result
+    end
+
     # Range-limited zero fill for the output degree band.
     if mask1 != 0 && mask2 != 0
         dk_min = (trailing_zeros(mask1) + trailing_zeros(mask2)) % Int
@@ -1487,6 +1504,16 @@ function mul!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
             last_degree = 63 - leading_zeros(mask1)
             stop = desc.mul_offsets[last_degree + 1] + min(last_degree, order - last_degree)
             _mul_schedules!(cr, c1, c2, mask1, mask2, PrefixMulSchedules(desc.mul, stop), Val(true))
+        elseif mask1 & ~UInt64(3) == 0 && mask2 & ~UInt64(3) != 0
+            _affine_product_add!(cr, c1, mask1, c2, mask2, desc)
+        elseif mask2 & ~UInt64(3) == 0 && mask1 & ~UInt64(3) != 0
+            _affine_product_add!(cr, c2, mask2, c1, mask1, desc)
+        elseif mask1 & ~UInt64(7) == 0 && mask2 & ~UInt64(7) != 0 &&
+               _few_coefficients(c1, mask1, desc)
+            _sparse_product_add!(cr, c1, mask1, c2, mask2, desc)
+        elseif mask2 & ~UInt64(7) == 0 && mask1 & ~UInt64(7) != 0 &&
+               _few_coefficients(c2, mask2, desc)
+            _sparse_product_add!(cr, c2, mask2, c1, mask1, desc)
         else
             _mul_schedules!(cr, c1, c2, mask1, mask2,
                             ActiveMulSchedules(desc, mask1, mask2), Val(false))
@@ -1495,6 +1522,92 @@ function mul!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
 
     result.degree_mask[] = compose_degree_mask(mask1, mask2, order)
     return result
+end
+
+@inline function _few_coefficients(c, mask, desc)
+    count = 0
+    for (s,e) in active_ranges(desc, mask)
+        @inbounds for i in s:e
+            count += !iszero(c[i])
+            count > 4 && return false
+        end
+    end
+    return true
+end
+
+function _sparse_product_add!(cr::Vector{T}, a::Vector{T}, am::UInt64,
+                              b::Vector{T}, bm::UInt64, desc::PSDesc) where T
+    adegrees = am
+    @inbounds while adegrees != 0
+        ad = trailing_zeros(adegrees)
+        adegrees &= adegrees-UInt64(1)
+        abase = desc.off[ad+1]-1
+        for ai in 1:desc.Nd[ad+1]
+            av = a[abase+ai]
+            iszero(av) && continue
+            bdegrees = bm & (typemax(UInt64) >> (63-(desc.order-ad)))
+            while bdegrees != 0
+                bd = trailing_zeros(bdegrees)
+                bdegrees &= bdegrees-UInt64(1)
+                bbase = desc.off[bd+1]-1
+                if ad >= bd
+                    sched = desc.mul[desc.mul_offsets[ad+1]+bd]
+                    for bi in 1:desc.Nd[bd+1]
+                        bv = b[bbase+bi]
+                        iszero(bv) || (cr[sched.k_local[bi,ai]] += av*bv)
+                    end
+                else
+                    sched = desc.mul[desc.mul_offsets[bd+1]+ad]
+                    for bi in 1:desc.Nd[bd+1]
+                        bv = b[bbase+bi]
+                        iszero(bv) || (cr[sched.k_local[ai,bi]] += av*bv)
+                    end
+                end
+            end
+        end
+    end
+    return nothing
+end
+
+# Full coefficient convolution is the AD boundary. Its arguments contain no
+# pool state or numeric sparsity decisions; aliases are handled by mul!.
+function _dense_product!(cr::Vector{T}, a::Vector{T}, b::Vector{T}, desc::PSDesc) where T
+    fill!(cr, zero(T))
+    mask = typemax(UInt64) >> (63 - desc.order)
+    _mul_schedules!(cr, a, b, mask, mask, desc.mul, Val(true))
+    return nothing
+end
+
+# Multiplication by a constant plus a linear form. Put each nonzero linear
+# coefficient outside the long loop, instead of multiplying the inner block's
+# zero entries for every coefficient of the other polynomial.
+function _affine_product_add!(cr::Vector{T}, a::Vector{T}, am::UInt64,
+                              b::Vector{T}, bm::UInt64, desc::PSDesc) where T
+    if am & UInt64(1) != 0
+        a0 = a[1]
+        for (s,e) in active_ranges(desc, bm)
+            @inbounds @simd for i in s:e
+                cr[i] += a0 * b[i]
+            end
+        end
+    end
+    am & UInt64(2) == 0 && return nothing
+    @inbounds for variable in 1:desc.nv
+        av = a[variable+1]
+        iszero(av) && continue
+        bm & UInt64(1) != 0 && (cr[variable+1] += av * b[1])
+        degrees = bm & ~UInt64(1) & ~(UInt64(1) << desc.order)
+        while degrees != 0
+            d = trailing_zeros(degrees)
+            degrees &= degrees - UInt64(1)
+            sched = desc.mul[desc.mul_offsets[d+1] + 1]
+            base = Int(sched.i_start) - 1
+            for i in 1:Int(sched.Ni)
+                cr[sched.k_local[variable,i]] += av * b[base+i]
+            end
+        end
+    end
+    return nothing
 end
 
 # `dense == true` promises that every schedule yielded by `schedules` is active
@@ -1594,15 +1707,9 @@ struct CompositionWorkspace{T}
 end
 
 function CompositionWorkspace(desc::PSDesc, ::Type{T}=Float64) where T
-    first_child = zeros(Int32, desc.N)
-    next_sibling = zeros(Int32, desc.N)
-    for i in desc.N:-1:2
-        parent = Int(desc.comp_plan.par_idx[i])
-        next_sibling[i] = first_child[parent]
-        first_child[parent] = Int32(i)
-    end
     images = [_ctps_zero(T, desc) for _ in 0:desc.order]
-    return CompositionWorkspace(desc, images, first_child, next_sibling, falses(desc.N))
+    return CompositionWorkspace(desc, images, desc.comp_plan.first_child,
+                                desc.comp_plan.next_sibling, falses(desc.N))
 end
 
 @inline function _check_composition(result, f, g)
@@ -1646,6 +1753,7 @@ function compose!(result::CTPS{T}, f::CTPS{T}, g::AbstractVector{<:CTPS{T}}) whe
         return _compose_retained!(result, f, g)
     end
     _check_composition(result, f, g)
+    _is_translation(g, f.desc) && return _translate!(result, f, g)
     return compose!(result, f, g, CompositionWorkspace(f.desc, T))
 end
 
@@ -1656,6 +1764,7 @@ function compose!(result::CTPS{T}, f::CTPS{T}, g::AbstractVector{<:CTPS{T}},
     end
     _check_composition(result, f, g)
     ws.desc === f.desc || throw(DimensionMismatch("Composition workspace descriptor must match inputs"))
+    _is_translation(g, f.desc) && return _translate!(result, f, g)
     fill!(ws.needed, false)
     # Read only active degrees; their inactive neighbours may contain poison
     # or uninitialized references. Mark ancestors in one reverse-index pass.
@@ -1979,6 +2088,25 @@ function _exp_series!(y::CTPS{T}, f::CTPS{T}) where T
     return y
 end
 
+# Explicit AD boundary: the derivative is multiplication by the primal exp.
+# All coefficient slots are initialized before entering this primitive.
+function _dense_exp!(yc::Vector{T}, fc::Vector{T}, desc::PSDesc) where T
+    mask = typemax(UInt64) >> (63-desc.order)
+    f = CTPS{T}(fc,desc,Ref(mask))
+    y = CTPS{T}(yc,desc,Ref(mask))
+    _exp_series!(y,f)
+    return nothing
+end
+
+@inline function _exp_dispatch!(y::CTPS{T}, f::CTPS{T}) where T
+    if within_autodiff() && T <: Union{Float32,Float64}
+        _dense_exp!(y.c,f.c,f.desc)
+        y.degree_mask[] = typemax(UInt64) >> (63-f.desc.order)
+        return y
+    end
+    return _exp_series!(y,f)
+end
+
 # (s, c) = (sin(f), cos(f)) or (sinh(f), cosh(f)) when `hyperbolic`. Neither
 # output may share storage with `f` or with the other. Each recurrence reads
 # its partner only up to degree order-1, so when a single function is wanted
@@ -2190,7 +2318,7 @@ end
 function exp(ctps::CTPS{T}) where T
     ctps = _ad_input(ctps)
     y = _ctps_zero(T, ctps.desc)
-    return _exp_series!(y, ctps)
+    return _exp_dispatch!(y, ctps)
 end
 
 function exp!(result::CTPS{T}, ctps::CTPS{T}) where T
@@ -2200,10 +2328,10 @@ function exp!(result::CTPS{T}, ctps::CTPS{T}) where T
     if result.c === ctps.c
         # The recurrence reads block k of f while writing block k of y.
         (idx, src) = _ctps_pooled_copy(ctps, desc)
-        _exp_series!(result, src)
+        _exp_dispatch!(result, src)
         _pool_release!(idx, src, desc)
     else
-        _exp_series!(result, ctps)
+        _exp_dispatch!(result, ctps)
     end
     return result
 end

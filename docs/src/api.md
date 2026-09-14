@@ -16,6 +16,7 @@ CTPS
 PSDesc
 PSWorkspace
 CompositionWorkspace
+CompositionPlan
 ```
 
 ## Descriptor management
@@ -126,6 +127,16 @@ coefficients are zero. Enzyme uses a separate retained-image implementation so
 reverse differentiation preserves dependencies through zero-valued
 coefficients.
 
+Coordinate translations `g[i] = x[i] + shift[i]` use a direct coefficient
+translation strategy in ordinary execution. Identity substitutions preserve
+the source's degree mask exactly. Other translations may conservatively mark
+zero blocks active, without changing their mathematical coefficients.
+
+For a fixed source evaluated at many maps, [`CompositionPlan`](@ref) snapshots
+the source and caches its traversal. Reuse a workspace with
+`compose!(out, plan, g, workspace)`; changing the original source does not
+change the plan. Construct a new plan to use updated source coefficients.
+
 ## Temporary workspaces and expression lowering
 
 ```@docs
@@ -169,3 +180,17 @@ before differentiation.
 Use `Enzyme.make_zero(p)` when constructing a tangent for an existing `CTPS`.
 It creates independent, initialized coefficient storage and a full tangent
 degree mask.
+
+Real `Float32`/`Float64` polynomial multiplication uses explicit forward and
+reverse coefficient-convolution rules. The reverse rule applies the transpose
+of truncated convolution, retaining adjoints for zero-valued coefficients and
+saving operands when later mutation requires it. Complex multiplication keeps
+the existing Enzyme path. Real `exp`/`exp!` also use a mathematical rule:
+their forward derivative multiplies by the primal exponential, and their
+reverse derivative applies the corresponding coefficient correlation.
+Ordinary elementary-function evaluation retains its graded recurrences.
+
+When a differentiated closure captures a fixed polynomial or composition plan,
+annotate the closure with `Enzyme.Const`, for example
+`Enzyme.gradient(Reverse, Enzyme.Const(loss), parameters)`. Only do this when
+the captured values are fixed, rather than differentiation parameters.

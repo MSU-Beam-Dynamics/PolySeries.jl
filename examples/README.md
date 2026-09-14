@@ -57,6 +57,11 @@ Combining TPSA with [Enzyme.jl](https://github.com/EnzymeAD/Enzyme.jl) for neste
 - Notes on differentiating allocating TPSA operations
 - Differentiating evaluation of a truncated polynomial
 
+### 08_parameter_gradients.jl
+Compute a gradient of selected Taylor coefficients with respect to 1,000
+parameters in one reverse pass, and verify it against an analytic reference.
+This example requires Enzyme, like example 07.
+
 ## Running Examples
 
 From the package checkout, run any example directly:

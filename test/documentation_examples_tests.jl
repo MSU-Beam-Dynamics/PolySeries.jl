@@ -52,7 +52,7 @@ end
     # Enzyme is a test extra and is available under Pkg.test. Keep direct
     # include("test/runtests.jl") useful in a source-only environment too.
     if Base.find_package("Enzyme") === nothing
-        filter!(path -> basename(path) != "07_enzyme_ad.jl", scripts)
+        filter!(path -> basename(path) ∉ ("07_enzyme_ad.jl", "08_parameter_gradients.jl"), scripts)
     end
 
     for script in scripts

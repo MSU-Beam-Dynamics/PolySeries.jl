@@ -31,6 +31,15 @@ First registered release.
 - Minimum supported Julia version lowered to 1.10 (LTS).
 
 ### Performance
+- Coordinate-shift composition uses a direct coefficient translation; identity
+  composition is a copy. `CompositionPlan` snapshots a fixed source and reuses
+  its traversal across changing substitution maps.
+- Multiplication uses specialized affine and very sparse quadratic kernels.
+- Real `Float32`/`Float64` Enzyme multiplication uses mathematical convolution
+  rules, including coefficient correlations in reverse mode, instead of
+  differentiating the primal schedule loops.
+- Real Enzyme `exp`/`exp!` reuse the primal exponential in their derivative
+  rules, avoiding differentiation of the graded recurrence itself.
 - `mul!` visits only the multiplication schedules whose degree pairs are
   active in the operands (previously it scanned all of them); sparse
   products are 1.3–2.2× faster and the output degree mask is computed in

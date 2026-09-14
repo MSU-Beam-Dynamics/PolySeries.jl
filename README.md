@@ -11,6 +11,8 @@ PolySeries.jl computes multivariate Taylor expansions through a chosen total deg
 
 - **Automatic differentiation to high order** — all partial derivatives up to the chosen order (at most 63) emerge as coefficients of the series. Multiplication tables grow like `binomial(2nv + order, order)/2`, so very high orders are practical for a few variables; `PSDesc` refuses descriptors above a configurable memory limit instead of exhausting memory.
 - **[Enzyme.jl compatible](examples/07_enzyme_ad.jl)** — differentiate through TPSA computations to get sensitivities of Taylor coefficients w.r.t. scalar design parameters.
+- **[Selected-coefficient parameter gradients](examples/08_parameter_gradients.jl)** — compute a weighted coefficient gradient with 1,000 parameters in one reverse pass.
+- **Planned composition** — direct coordinate translations and reusable `CompositionPlan` snapshots for fixed sources evaluated at changing maps.
 - **Sparse degree-mask representation** — only active degree blocks are touched; constant-only inputs have near-zero overhead.
 - **Lazy-zero allocation** — temporaries use `undef` memory; the `degree_mask` invariant ensures garbage outside the active range is never read.
 - **Zero-allocation in-place API** — `mul!` (a method of `LinearAlgebra.mul!`), `add!`, `scaleadd!`, `pow!`, etc., plus `PSWorkspace` for pool-based temporary management.

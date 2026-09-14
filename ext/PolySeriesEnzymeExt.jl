@@ -126,4 +126,7 @@ function EnzymeRules.reverse(config::EnzymeRules.RevConfig,
     return (nothing, nothing, nothing, nothing)
 end
 
+include("multiplication_rules.jl")
+include("exponential_rules.jl")
+
 end # module

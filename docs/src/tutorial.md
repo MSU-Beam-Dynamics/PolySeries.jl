@@ -280,6 +280,27 @@ compose!(out, f, g, cws)
 element(out, [2, 0])
 ```
 
+### Repeated composition of a fixed source
+
+A plan owns a source snapshot and can be reused with different substitution
+maps. Keep a separate workspace for each concurrent caller.
+
+```@example planned_composition
+using PolySeries
+desc = PSDesc(2, 4)
+x, y = CTPS(0.0, 1, desc), CTPS(0.0, 2, desc)
+source = x^2 + 2y
+plan = CompositionPlan(source)
+workspace = CompositionWorkspace(desc)
+out = CTPS(Float64, desc)
+compose!(out, plan, [x + 0.2, y - 0.1], workspace)
+@assert isapprox(cst(out), -0.16)
+@assert element(out, [1, 0]) == 0.4
+zero!(source) # The plan still represents x² + 2y.
+compose!(out, plan, [x, y], workspace)
+@assert element(out, [2, 0]) == 1
+```
+
 ## 11. Complex Coefficients
 
 When using `@tpsa` with complex coefficients, give the workspace the same type:
