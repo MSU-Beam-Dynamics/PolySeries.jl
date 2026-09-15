@@ -46,6 +46,7 @@ include("test/polymap_tests.jl")
 - **ext_enzyme_test.jl**: Enzyme regressions, including zero coefficients, prebuilt inputs, descriptor changes, and aliasing
 - **performance_strategy_tests.jl**: Sparse factor kernels, coordinate translation, fixed-source plans, initialized coefficient references, poisoned inactive storage, and workspace allocation checks
 - **square_kernel_tests.jl**, **enzyme_square_kernel_tests.jl**: Dedicated squaring, shared buffers with distinct masks, overflow-sensitive products, independent coefficient references, alternative schedule/block layouts, and forward/batched/reverse AD
+- **output_product_tests.jl**, **enzyme_output_product_tests.jl**: Output-coefficient plans, compact index widths, BigFloat references, sparse/poisoned fallback, allocations, and AD across descriptor changes
 - **translation_reference_tests.jl**: Independent multivariate binomial references for real, complex, and higher-precision coordinate shifts
 - **enzyme_product_rule_tests.jl**, **enzyme_exponential_rule_tests.jl**: Mathematical primitive rules, overwritten operands, aliasing, forward/batched/reverse sensitivities, and selected-coefficient gradients with up to 1,000 parameters
 - **enzyme_normalized_series_tests.jl**: Forward and reverse sensitivities of scaled high-order coefficients; ordinary, in-place, and aliased coefficient checks are in **order_limits_tests.jl**

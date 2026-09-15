@@ -31,6 +31,11 @@ First registered release.
 - Minimum supported Julia version lowered to 1.10 (LTS).
 
 ### Performance
+- Full Float32/Float64 products use cached output-coefficient plans for one
+  variable at orders 6–63 and two variables at orders 6–20. Other descriptors,
+  degree gaps, and products with many leading numerical zeros retain the
+  existing kernels. The additional compact tables are included in descriptor
+  memory-limit checks; Enzyme keeps the mathematical multiplication rules.
 - Dedicated squaring reuses symmetric coefficient products in `p*p`, integer
   powers, and aliased `mul!(p,p,p)`. Small descriptors retain the general kernel;
   real Enzyme multiplication keeps its explicit mathematical derivative rules.

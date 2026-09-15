@@ -20,6 +20,7 @@ EnzymeRules.inactive_type(::Type{<:PolySeries.PSDesc})      = true
 EnzymeRules.inactive_type(::Type{<:PolySeries.DescPool})      = true
 EnzymeRules.inactive_type(::Type{<:PolySeries.PolyMap})       = true
 EnzymeRules.inactive_type(::Type{<:PolySeries.MulSchedule2D}) = true
+EnzymeRules.inactive_type(::Type{<:PolySeries.OutputProductPlan}) = true
 EnzymeRules.inactive_type(::Type{<:PolySeries.CompPlan})      = true
 EnzymeRules.inactive_type(::Type{<:PolySeries.DescriptorRegistry}) = true
 

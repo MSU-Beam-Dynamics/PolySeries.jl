@@ -20,6 +20,7 @@ using PolySeries
     @testset "Multiplication Reference" begin
         include("mul_reference_tests.jl")
         include("square_kernel_tests.jl")
+        include("output_product_tests.jl")
     end
 
     @testset "Type Stability" begin

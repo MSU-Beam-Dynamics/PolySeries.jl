@@ -40,3 +40,7 @@ benchmarks/*
 !benchmarks/benchmark_multiplication.jl
 !benchmarks/squaring_results.csv
 !benchmarks/squaring_layout_results.csv
+!benchmarks/benchmark_output_product.jl
+!benchmarks/benchmark_output_layouts.jl
+!benchmarks/output_product_results.csv
+!benchmarks/output_layout_results.csv

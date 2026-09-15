@@ -26,6 +26,18 @@ struct MulSchedule2D
     dj::UInt8                # degree of second operand (for mask check)
 end
 
+# Commutative input pairs grouped by output coefficient. Only small-variable
+# descriptors selected by measurements build this optional, read-only table.
+struct OutputProductPlan{I<:Integer}
+    offsets::Vector{Int}
+    left::Vector{I}
+    right::Vector{I}
+    diagonal::Vector{I}
+end
+
+@inline _has_output_product_plan(nv, order) =
+    (nv == 1 && order >= 6) || (nv == 2 && 6 <= order <= 20)
+
 # Empty sentinel
 MulSchedule2D() = MulSchedule2D(Matrix{Int32}(undef, 0, 0),
                                   Int32(0), Int32(0), Int32(0),
@@ -72,7 +84,15 @@ function descriptor_footprint_bytes(nv::Int, order::Int, N::Int, Nd::Vector{Int}
     for di in 0:order, dj in 0:min(di, order - di)
         sched_entries += Float64(Nd[di + 1]) * Float64(Nd[dj + 1])
     end
-    return 4 * sched_entries +                    # MulSchedule2D k_local (Int32)
+    output_bytes = 0.0
+    if _has_output_product_plan(nv, order)
+        pairs = sum(di == dj ? Float64(Nd[di+1])*(Nd[di+1]-1)/2 :
+                    Float64(Nd[di+1])*Nd[dj+1]
+                    for di in 0:order for dj in 0:min(di,order-di))
+        # UInt16 pairs/diagonals, Int offsets, and construction count/cursor scratch.
+        output_bytes = 4pairs + 2N + sizeof(Int)*(3N+2)
+    end
+    return output_bytes + 4 * sched_entries +                    # MulSchedule2D k_local (Int32)
            sizeof(Int) * (order + 1) +           # degree-row schedule offsets
            Float64(N) * (nv + 1) +                # PolyMap exponent table (UInt8)
            Float64(N) * 48 +                      # exp_to_idx Dict and CompPlan
@@ -119,6 +139,7 @@ mutable struct PSDesc
     const exp_to_idx::Dict              # reverse map: SVector{nv+1,UInt8} → Int (concrete per instance)
     const mul::Vector{MulSchedule2D}    # 2D k-map multiplication schedules indexed as (di,dj)
     const mul_offsets::Vector{Int}     # first schedule for each di; dj is the offset
+    const output_product::Union{Nothing,OutputProductPlan{UInt16}}
     const comp_plan::CompPlan           # composition build plan
     const _pools::Vector{DescPool}      # per-thread coefficient buffer pools (Float64 only)
 end
@@ -279,7 +300,9 @@ function PSDesc(nv::Int, order::Int)
         pools = [DescPool(N) for _ in 1:Threads.nthreads()]
 
         entries = @atomic :acquire DESCRIPTOR_REGISTRY.entries
-        desc = PSDesc(length(entries) + 1, nv, order, N, Nd, off, polymap, exp_to_idx, mul, mul_offsets, comp_plan, pools)
+        output_product = _has_output_product_plan(nv, order) ?
+            build_output_product_plan(N, mul, UInt16) : nothing
+        desc = PSDesc(length(entries) + 1, nv, order, N, Nd, off, polymap, exp_to_idx, mul, mul_offsets, output_product, comp_plan, pools)
         _init_desc_pools!(pools, desc)   # phase-2: populate CTPS wrappers now that desc exists
         @atomic :release DESCRIPTOR_REGISTRY.entries = [entries; desc]
         DESC_CACHE[key] = desc
