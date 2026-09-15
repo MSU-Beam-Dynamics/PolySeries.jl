@@ -37,3 +37,6 @@ Manifest.toml
 benchmarks/*
 !benchmarks/benchmark_rebuild.jl
 !benchmarks/rebuild_results.csv
+!benchmarks/benchmark_multiplication.jl
+!benchmarks/squaring_results.csv
+!benchmarks/squaring_layout_results.csv

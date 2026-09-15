@@ -1,0 +1,41 @@
+# 2026-09-14T23:19:30.574, Julia 1.12.7, apple-m3, threads=1, base=e2259a0
+# Enzyme=0.13.173, PolySeries=0.1.0
+# sha256 src/ctps.jl 5a74c908226db1fad7e43d3865637ed4eda44e4314c9eb079e15f8f6a5e89b62
+# sha256 src/multiplication.jl fdeecff79f36ac58ff6e7de17622e387b57f30c30a514ca90b90e0b62c714956
+label,min_ns,median_ns,julia_bytes,julia_allocations
+layout/original/0/4/6,783.110,842.466,0,0
+layout/original/64/4/6,801.991,856.266,0,0
+layout/original/256/4/6,829.327,857.976,0,0
+layout/output_degree/0/4/6,775.830,848.750,0,0
+layout/output_degree/64/4/6,817.935,887.685,0,0
+layout/output_degree/256/4/6,826.533,838.315,0,0
+layout/original/0/6/6,3820.091,4107.023,0,0
+layout/original/64/6/6,4081.158,4111.842,0,0
+layout/original/256/6/6,4081.522,4179.348,0,0
+layout/output_degree/0/6/6,4077.682,4176.136,0,0
+layout/output_degree/64/6/6,4076.087,4099.652,0,0
+layout/output_degree/256/6/6,3876.826,4147.652,0,0
+layout/original/0/6/8,25281.250,26744.750,0,0
+layout/original/64/6/8,24989.500,26047.000,0,0
+layout/original/256/6/8,25093.750,25948.000,0,0
+layout/output_degree/0/6/8,25083.250,25958.250,0,0
+layout/output_degree/64/6/8,25125.000,25651.000,0,0
+layout/output_degree/256/6/8,25073.000,25593.750,0,0
+layout/original/0/6/10,119875.000,122666.500,0,0
+layout/original/64/6/10,118375.000,124229.000,0,0
+layout/original/256/6/10,125791.000,127937.500,0,0
+layout/output_degree/0/6/10,119000.000,122250.000,0,0
+layout/output_degree/64/6/10,117500.000,121750.000,0,0
+layout/output_degree/256/6/10,125584.000,127979.500,0,0
+layout/original/0/6/12,485875.000,516146.000,0,0
+layout/original/64/6/12,490666.000,529041.500,0,0
+layout/original/256/6/12,504500.000,526354.000,0,0
+layout/output_degree/0/6/12,485625.000,508291.500,0,0
+layout/output_degree/64/6/12,495375.000,542416.000,0,0
+layout/output_degree/256/6/12,504125.000,527833.500,0,0
+layout/original/0/8/8,141417.000,145354.000,0,0
+layout/original/64/8/8,131291.000,146812.500,0,0
+layout/original/256/8/8,133292.000,146000.000,0,0
+layout/output_degree/0/8/8,132000.000,142375.000,0,0
+layout/output_degree/64/8/8,133458.000,148229.500,0,0
+layout/output_degree/256/8/8,132083.000,142917.000,0,0

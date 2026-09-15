@@ -20,6 +20,7 @@ using EnzymeCore: within_autodiff
 import LinearAlgebra: mul!   # PolySeries.mul! extends LinearAlgebra.mul!
 include("polymap.jl")
 include("ctps.jl")
+include("multiplication.jl")
 include("composition.jl")
 export CTPS, PSDesc, pow, cst, element, findindex # assign!, reassign!
 export add!, addto!, sub!, subfrom!, scale!, scaleadd!, copy!, zero!, mul!, compose!, compose

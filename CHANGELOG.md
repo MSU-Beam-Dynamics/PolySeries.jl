@@ -31,6 +31,9 @@ First registered release.
 - Minimum supported Julia version lowered to 1.10 (LTS).
 
 ### Performance
+- Dedicated squaring reuses symmetric coefficient products in `p*p`, integer
+  powers, and aliased `mul!(p,p,p)`. Small descriptors retain the general kernel;
+  real Enzyme multiplication keeps its explicit mathematical derivative rules.
 - Coordinate-shift composition uses a direct coefficient translation; identity
   composition is a copy. `CompositionPlan` snapshots a fixed source and reuses
   its traversal across changing substitution maps.

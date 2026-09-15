@@ -1498,12 +1498,17 @@ function mul!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
         # _ad_input guarantees during Enzyme AD) and for a prefix of the table
         # when both masks are the same contiguous run of degrees from zero.
         full_mask = typemax(UInt64) >> (63 - order)
+        square = !within_autodiff() && desc.N >= 128 && c1 === c2 && mask1 == mask2 && mask1 > UInt64(3)
         if within_autodiff() || (mask1 == full_mask && mask2 == full_mask)
-            _mul_schedules!(cr, c1, c2, mask1, mask2, desc.mul, Val(true))
+            _mul_full!(cr, c1, c2, desc, square)
         elseif mask1 == mask2 && (mask1 & (mask1 + UInt64(1))) == 0
             last_degree = 63 - leading_zeros(mask1)
             stop = desc.mul_offsets[last_degree + 1] + min(last_degree, order - last_degree)
-            _mul_schedules!(cr, c1, c2, mask1, mask2, PrefixMulSchedules(desc.mul, stop), Val(true))
+            if square
+                _square_schedules!(cr, c1, PrefixMulSchedules(desc.mul, stop), Val(0))
+            else
+                _mul_schedules!(cr, c1, c2, mask1, mask2, PrefixMulSchedules(desc.mul, stop), Val(true))
+            end
         elseif mask1 & ~UInt64(3) == 0 && mask2 & ~UInt64(3) != 0
             _affine_product_add!(cr, c1, mask1, c2, mask2, desc)
         elseif mask2 & ~UInt64(3) == 0 && mask1 & ~UInt64(3) != 0
@@ -1514,6 +1519,8 @@ function mul!(result::CTPS{T}, ctps1::CTPS{T}, ctps2::CTPS{T}) where T
         elseif mask2 & ~UInt64(7) == 0 && mask1 & ~UInt64(7) != 0 &&
                _few_coefficients(c2, mask2, desc)
             _sparse_product_add!(cr, c2, mask2, c1, mask1, desc)
+        elseif square
+            _square_schedules!(cr, c1, ActiveMulSchedules(desc, mask1, mask2), Val(0))
         else
             _mul_schedules!(cr, c1, c2, mask1, mask2,
                             ActiveMulSchedules(desc, mask1, mask2), Val(false))
@@ -1573,8 +1580,7 @@ end
 # pool state or numeric sparsity decisions; aliases are handled by mul!.
 function _dense_product!(cr::Vector{T}, a::Vector{T}, b::Vector{T}, desc::PSDesc) where T
     fill!(cr, zero(T))
-    mask = typemax(UInt64) >> (63 - desc.order)
-    _mul_schedules!(cr, a, b, mask, mask, desc.mul, Val(true))
+    _mul_full!(cr, a, b, desc, a === b && desc.N >= 128)
     return nothing
 end
 
