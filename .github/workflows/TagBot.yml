@@ -17,3 +17,10 @@ jobs:
       - uses: JuliaRegistries/TagBot@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # A deploy key lets the tag TagBot pushes trigger Documentation.yml,
+          # which builds the versioned /stable/ docs. Tags pushed with
+          # GITHUB_TOKEN alone never start other workflows. Generate with
+          # DocumenterTools.genkeys(user="MSU-Beam-Dynamics", repo="PolySeries.jl")
+          # and store as the DOCUMENTER_KEY secret plus a write deploy key.
+          # Harmless while the secret is unset: TagBot falls back to the token.
+          ssh: ${{ secrets.DOCUMENTER_KEY }}

@@ -44,3 +44,6 @@ benchmarks/*
 !benchmarks/benchmark_output_layouts.jl
 !benchmarks/output_product_results.csv
 !benchmarks/output_layout_results.csv
+
+# Session working notes, not part of the package.
+Claude outputs/

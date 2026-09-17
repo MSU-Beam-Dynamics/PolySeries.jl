@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/MSU-Beam-Dynamics/PolySeries.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/MSU-Beam-Dynamics/PolySeries.jl/actions/workflows/CI.yml)
 [![codecov](https://codecov.io/gh/MSU-Beam-Dynamics/PolySeries.jl/graph/badge.svg)](https://codecov.io/gh/MSU-Beam-Dynamics/PolySeries.jl)
+[![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://msu-beam-dynamics.github.io/PolySeries.jl/dev/)
 
 **Truncated Power Series Algebra for Julia**
 
