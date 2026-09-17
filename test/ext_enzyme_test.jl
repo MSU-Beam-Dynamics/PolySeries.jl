@@ -16,6 +16,7 @@ include("enzyme_product_rule_tests.jl")
 include("enzyme_square_kernel_tests.jl")
 include("enzyme_output_product_tests.jl")
 include("enzyme_exponential_rule_tests.jl")
+include("enzyme_identity_element_tests.jl")
 
 @testset "Enzyme with an explicitly owned descriptor" begin
     desc = PSDesc(1, 4)

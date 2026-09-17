@@ -720,6 +720,63 @@ end
 
 # ========== End simplified constructors ==========
 
+# ── Base.zero / Base.one / Base.iszero ───────────────────────────────────────
+#
+# Only the instance forms are defined. `CTPS{T}` is parameterised by the
+# coefficient type alone — the number of variables and the order live in the
+# descriptor a polynomial carries — so `zero(CTPS{Float64})` has nothing to
+# build from. Resolving it through the task-local default would make the
+# result depend on invisible state and throw when no default is set, so the
+# type-level forms are deliberately left undefined; `zeros(CTPS{Float64}, n)`
+# and similar generic constructors are therefore not supported. Build from an
+# existing polynomial, or pass a descriptor explicitly.
+#
+# Under Enzyme both allocate initialized storage (via the shared internal
+# constructors) so a structural zero still carries a tangent slot.
+
+"""
+    zero(p::CTPS) -> CTPS
+
+The zero polynomial over `p`'s descriptor. `p` itself is not read or modified.
+There is no `zero(::Type{CTPS{T}})`: a polynomial needs a descriptor, which the
+type does not carry. See also [`zero!`](@ref), which zeroes a polynomial in
+place.
+"""
+Base.zero(ctps::CTPS{T}) where T = _ctps_zero(T, ctps.desc)
+
+"""
+    one(p::CTPS) -> CTPS
+
+The constant polynomial `1` over `p`'s descriptor. `p` itself is not read or
+modified. There is no `one(::Type{CTPS{T}})`: a polynomial needs a descriptor,
+which the type does not carry.
+"""
+Base.one(ctps::CTPS{T}) where T = _ctps_constant(one(T), ctps.desc)
+
+"""
+    iszero(p::CTPS) -> Bool
+
+Whether every coefficient of `p` is zero. Inactive degree blocks are
+structurally zero and are not read, so this never touches uninitialized
+storage. A cleared degree mask answers immediately; otherwise the active
+coefficients are scanned, since a mask bit may survive cancellation.
+
+Under Enzyme this reports the primal value: a coefficient that is numerically
+zero but carries a nonzero tangent counts as zero, exactly as it would for a
+scalar.
+"""
+function Base.iszero(ctps::CTPS{T}) where T
+    mask = ctps.degree_mask[]
+    mask == 0 && return true
+    c = ctps.c
+    for (s, e) in active_ranges(ctps.desc, mask)
+        @inbounds for i in s:e
+            iszero(c[i]) || return false
+        end
+    end
+    return true
+end
+
 # Coefficient storage is lazy: a degree block whose bit is clear in
 # `degree_mask` is mathematically zero but its memory is uninitialized, so every
 # read must go through the mask. `cst` feeds the expansion point of sqrt, inv,

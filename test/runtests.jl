@@ -69,6 +69,7 @@ using PolySeries
 
     @testset "Arithmetic Accuracy" begin
         include("arithmetic_tests.jl")
+        include("identity_element_tests.jl")
     end
 
     @testset "Degree Mask Regression" begin

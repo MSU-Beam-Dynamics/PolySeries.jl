@@ -27,6 +27,21 @@ get_descriptor
 clear_descriptor!
 ```
 
+## Identity elements
+
+```@docs
+zero(::CTPS)
+one(::CTPS)
+iszero(::CTPS)
+```
+
+Only the instance forms exist. `CTPS{T}` is parameterised by the coefficient
+type alone — the number of variables and the order belong to the descriptor a
+polynomial carries — so `zero(CTPS{Float64})` has nothing to build from and is
+deliberately left undefined, as is `one`. Generic constructors that need the
+type-level form, such as `zeros(CTPS{Float64}, n)`, are therefore unsupported;
+build from an existing polynomial or pass a descriptor explicitly.
+
 ## Coefficient access
 
 ```@docs

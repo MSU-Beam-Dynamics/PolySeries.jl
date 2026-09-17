@@ -65,6 +65,10 @@ First registered release.
   temporaries for complex and other coefficient types; the default remains
   `Float64`. `@tpsa` evaluates each operand once in source order and reports
   incompatible workspace types before borrowing.
+- `zero(p)`, `one(p)` and `iszero(p)` for `CTPS`. The instance forms take
+  their descriptor from `p`; the type-level `zero(::Type{CTPS{T}})` and
+  `one(::Type{CTPS{T}})` are deliberately undefined, since the type carries no
+  descriptor.
 - `sincos!(s, c, p)` computes both trigonometric series in one pass;
   `tan!`, `inv!` and `div!` complete the in-place API.
 - `@tpsa` supports `/`, `tan`, `asin`, `acos`, and `Number` (including
