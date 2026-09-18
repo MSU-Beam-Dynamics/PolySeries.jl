@@ -28,7 +28,9 @@ First registered release.
 - The legacy constructors `CTPS(T, nv, order)`, `CTPS(a, nv, order)` and
   `CTPS(a, n, nv, order)` validate their arguments like the explicit-descriptor
   forms (an `order == 0` variable used to hit a `BoundsError`).
-- Minimum supported Julia version lowered to 1.10 (LTS).
+- Requires Julia 1.12. The zero-allocation guarantees and the Enzyme rules are
+  verified on 1.12; on 1.10 and 1.11 the test suite fails, so those versions
+  are not claimed. Compat may be widened in a later release once they pass.
 
 ### Performance
 - Full Float32/Float64 products use cached output-coefficient plans for one

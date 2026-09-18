@@ -13,7 +13,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ['1.10', '1.11', '1.12']
+        # 1.12 is the declared minimum: the zero-allocation guarantees and the
+        # Enzyme rules are verified there and fail on 1.10/1.11. Widening compat
+        # later is a non-breaking change once those pass.
+        version: ['1.12']
     env:
       JULIA_NUM_THREADS: '4'
     steps:
