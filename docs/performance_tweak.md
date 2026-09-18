@@ -42,7 +42,7 @@ coefficient gradients are checked with 100 and 1,000 parameters.
 
 Measured September 14, 2026, on Apple M3, Julia 1.12.7, Enzyme 0.13.173,
 with one Julia thread. These are warmed median times from the final run.
-The [complete results](../benchmarks/rebuild_results.csv) include every case,
+The complete results (`benchmarks/rebuild_results.csv`) include every case,
 allocation counts, and hashes of the measured source files.
 
 | Operation | Case | Before (µs) | After (µs) | Speedup |

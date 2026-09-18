@@ -50,7 +50,7 @@ this is not a new comparison with GTPSA.
 ## Final measurements
 
 Measured September 15, 2026, on Apple M3, Julia 1.12.7, Enzyme 0.13.173,
-with one Julia thread. The [full results](../benchmarks/output_product_results.csv)
+with one Julia thread. The full results (`benchmarks/output_product_results.csv`)
 record the source hashes, minimum/median times, and allocations. Representative
 Float64 warmed medians against `c11343a` are:
 
@@ -81,7 +81,7 @@ Measured complete cold descriptor construction was approximately 2.10 ms,
 was larger than the isolated plan cost. Plans also add temporary construction
 allocations, recorded separately in the results.
 
-The [layout comparisons](../benchmarks/output_layout_results.csv) preserve the
+The layout comparisons (`benchmarks/output_layout_results.csv`) preserve the
 evidence for retaining the old higher-dimensional kernel, including compact
 indices and multiple-accumulator variants that were not selected.
 

@@ -30,7 +30,7 @@ differentiated implementation.
 
 Measured September 14, 2026 (local time), on Apple M3, Julia 1.12.7,
 Enzyme 0.13.173, with one Julia thread. The baseline is `e2259a0`.
-Times below are warmed medians; the [complete results](../benchmarks/squaring_results.csv)
+Times below are warmed medians; the complete results (`benchmarks/squaring_results.csv`)
 also record minimum times, allocation counts, and source hashes.
 
 | Operation | Variables/order | Before (µs) | After (µs) | Time reduction |
@@ -68,7 +68,7 @@ Initial comparisons did not establish a consistent additional gain across
 descriptors. These alternatives therefore remain benchmark candidates; the
 production dispatcher uses the original ordering and complete columns. This
 also avoids adding unused metadata to every descriptor.
-The [final layout measurements](../benchmarks/squaring_layout_results.csv)
+The final layout measurements (`benchmarks/squaring_layout_results.csv`)
 retain those comparisons separately from the before/after production results.
 
 ## Reproduction

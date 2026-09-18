@@ -34,16 +34,7 @@ Manifest.toml
 
 # Performance measurement scripts and their results: development tooling with
 # its own environment (GTPSA, BenchmarkTools), not part of the package.
-benchmarks/*
-!benchmarks/benchmark_rebuild.jl
-!benchmarks/rebuild_results.csv
-!benchmarks/benchmark_multiplication.jl
-!benchmarks/squaring_results.csv
-!benchmarks/squaring_layout_results.csv
-!benchmarks/benchmark_output_product.jl
-!benchmarks/benchmark_output_layouts.jl
-!benchmarks/output_product_results.csv
-!benchmarks/output_layout_results.csv
+benchmarks/
 
 # Session working notes, not part of the package.
 Claude outputs/
