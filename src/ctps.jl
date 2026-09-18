@@ -948,7 +948,7 @@ end
 
 
 # Overloaded operations
-import Base: +, -, *, /, sin, cos, tan, sinh, cosh, asin, acos, sqrt, ^, inv, exp, log, copy!, show
+import Base: +, -, *, /, sin, cos, tan, sinh, cosh, asin, acos, atan, sqrt, ^, inv, exp, log, copy!, show
 
 # -----------------------------------------------------------------------
 # Pretty-printing helpers
@@ -2654,6 +2654,48 @@ asin(ctps::CTPS{T}) where T = _asin_into!(_ctps_zero(T, ctps.desc), ctps, false)
 acos(ctps::CTPS{T}) where T = _asin_into!(_ctps_zero(T, ctps.desc), ctps, true)
 asin!(result::CTPS{T}, ctps::CTPS{T}) where T = _asin_into!(result, ctps, false)
 acos!(result::CTPS{T}, ctps::CTPS{T}) where T = _asin_into!(result, ctps, true)
+
+# ── arctangent ───────────────────────────────────────────────────────────────
+#
+# y = atan(f) satisfies (E y)·(1 + f²) = E f, the same shape as log and asin.
+# The derivative 1/(1+f²) is rational, so unlike asin there is no square-root
+# branch to select: the only branch decision is the constant term, taken from
+# the scalar Base.atan. The solver reads g = 1 + f² only at degrees ≥ 1 and
+# takes g₀ separately, so the scratch series holds f² and g₀ = 1 + a₀².
+
+@inline function _atan_center(a0::T) where T
+    g0 = one(T) + a0 * a0
+    iszero(g0) && throw(DomainError(a0, "atan: the expansion center ±im is a branch point"))
+    return g0
+end
+
+"""
+    atan!(out::CTPS, p::CTPS) -> out
+
+Write `atan(p)` to `out`. `out` may alias `p`. For complex coefficients the
+expansion center must not be `±im`, where `atan` is singular.
+"""
+function atan!(result::CTPS{T}, ctps::CTPS{T}) where T
+    ctps = _ad_input(ctps)
+    _check_descriptors(result, ctps)
+    a0 = cst(ctps)
+    g0 = _atan_center(a0)                     # validate before borrowing or writing
+    desc = ctps.desc
+    (idx_t, t) = _ctps_pooled(T, desc)
+    try
+        mul!(t, ctps, ctps)                   # degrees ≥ 1 of 1 + f²; g₀ is passed explicitly
+        _euler_divide_series!(result, T(Base.atan(a0)), ctps.c, ctps.degree_mask[],
+                              t.c, t.degree_mask[], g0, one(T), desc)
+    finally
+        _pool_release!(idx_t, t, desc)
+    end
+    return result
+end
+
+function atan(ctps::CTPS{T}) where T
+    ctps = _ad_input(ctps)
+    return atan!(_ctps_zero(T, ctps.desc), ctps)
+end
 
 # ── tangent: one shared sin/cos pass, then one division recurrence ───────────
 

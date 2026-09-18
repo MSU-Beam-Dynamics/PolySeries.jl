@@ -77,7 +77,7 @@ f + x;  f - y;  f * x;  -f;  f^2;  2.0*f
 
 # Math functions
 exp(x); log(1 + x); sqrt(1 + x); pow(1 + x, 3)
-sin(x); cos(x); tan(x); asin(x/2); acos(x/2)
+sin(x); cos(x); tan(x); asin(x/2); acos(x/2); atan(x)
 sinh(x); cosh(x)
 
 # Coefficient access

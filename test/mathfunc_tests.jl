@@ -487,8 +487,8 @@ end
     # @tpsa: division and the newly lowered unary calls, zero allocation.
     ws = PSWorkspace(desc, 8)
     r = CTPS(Float64, desc)
-    @tpsa ws r = a / b + tan(x) - asin(0.5 * x) + acos(0.5 * y) / 2.0
-    @test allc(r) ≈ allc(a / b + tan(x) - asin(0.5 * x) + acos(0.5 * y) / 2.0) atol=1e-13
+    @tpsa ws r = a / b + tan(x) - asin(0.5 * x) + acos(0.5 * y) / 2.0 + atan(x - y)
+    @test allc(r) ≈ allc(a / b + tan(x) - asin(0.5 * x) + acos(0.5 * y) / 2.0 + atan(x - y)) atol=1e-13
     @test ws.sp == length(ws.bufs)
     @tpsa ws r = 2.0 / b
     @test allc(r) ≈ allc(2.0 / b) atol=1e-14
@@ -518,4 +518,70 @@ end
     @tpsa cws cr = cx / (2.0im) - (0.5 + 0.5im)
     @test element(cr, [1]) == -0.5im && cst(cr) == -0.5 - 0.5im
     @test cws.sp == 4
+end
+
+@testset "atan and atan!" begin
+    desc = PSDesc(2, 6)
+    x = CTPS(0.0, 1, desc); y = CTPS(0.0, 2, desc)
+    allc(p) = [element(p, [Int(desc.polymap.map[i, v]) for v in 2:3]) for i in 1:desc.N]
+    one_p = CTPS(1.0, desc)
+
+    # Exact single-variable coefficients: (-1)^k / (2k+1) on odd degrees only.
+    a = atan(x)
+    @test [element(a, [k, 0]) for k in 0:6] ≈ [0, 1, 0, -1/3, 0, 1/5, 0]
+    @test a.degree_mask[] == UInt64(0b0101011)          # constant, then odd degrees only
+
+    # Round trips and identities, at zero and at nonzero real centers.
+    for f in (0.5 * x + 0.3 * y^2, 0.7 + x - 0.4 * y, -2.0 + 0.2 * x * y + y)
+        @test allc(tan(atan(f))) ≈ allc(f) atol=1e-12
+        # d/dx atan(f) = f_x / (1 + f²), checked on the x-derivative coefficients.
+        af = atan(f); g = one_p + f * f
+        lhs = [element(af, [k + 1, 0]) * (k + 1) for k in 0:5]            # ∂/∂x, y = 0 slice
+        fx  = [element(f, [k + 1, 0]) * (k + 1) for k in 0:5]
+        q   = inv(g)                                                    # 1/(1+f²)
+        # multiply the two slices as truncated series in x
+        conv = [sum(fx[j+1] * element(q, [k - j, 0]) for j in 0:k) for k in 0:5]
+        @test lhs ≈ conv atol=1e-11
+        @test cst(af) ≈ atan(cst(f))
+    end
+    # atan(tan(w)) = w when |w0| < π/2.
+    w = 0.6 + 0.3 * x - 0.2 * y
+    @test allc(atan(tan(w))) ≈ allc(w) atol=1e-12
+    # Odd function.
+    @test allc(atan(-x - 0.5 * y)) ≈ -allc(atan(x + 0.5 * y)) atol=1e-14
+    # atan(f) + atan(1/f) = ±π/2 for a series with nonzero constant term.
+    f = 2.0 + x + y^2
+    @test allc(atan(f) + atan(inv(f))) ≈ allc(CTPS(pi / 2, desc)) atol=1e-12
+
+    # In-place forms, aliasing, zero allocation, pool accounting.
+    out = CTPS(Float64, desc)
+    @test allc(atan!(out, w)) ≈ allc(atan(w)) atol=1e-14
+    p = CTPS(w); atan!(p, p)
+    @test allc(p) ≈ allc(atan(w)) atol=1e-14
+    atan!(out, w)
+    @test (@allocated atan!(out, w)) == 0
+    pool = desc._pools[Threads.threadid()]
+    capacity = pool.sp
+    for _ in 1:3 * PolySeries.CTPS_POOL_SIZE
+        atan!(out, w)
+    end
+    @test pool.sp == capacity
+
+    # Complex coefficients: atan(i·z) = i·atanh(z) has coefficients 1/(2k+1) on
+    # odd degrees, all purely imaginary.
+    cdesc = PSDesc(1, 5)
+    z = CTPS(0.0 + 0.0im, 1, cdesc)
+    ai = atan(im * z)
+    @test [element(ai, [k]) for k in 0:5] ≈ [0, im, 0, im / 3, 0, im / 5] atol=1e-14
+    # A complex center off the cut follows the scalar constant and round-trips.
+    zc = CTPS(0.3 + 0.4im, 1, cdesc)
+    @test cst(atan(zc)) == atan(0.3 + 0.4im)
+    @test [element(tan(atan(zc)), [k]) for k in 0:5] ≈ [0.3 + 0.4im, 1, 0, 0, 0, 0] atol=1e-12
+
+    # Float32 and BigFloat keep their type.
+    @test atan(CTPS(0.5f0, 1, PSDesc(1, 4))) isa CTPS{Float32}
+    setprecision(BigFloat, 256) do
+        ab = atan(CTPS(BigFloat(0), 1, PSDesc(1, 7)))
+        @test element(ab, [7]) ≈ -BigFloat(1) / 7 rtol=BigFloat("1e-65")
+    end
 end

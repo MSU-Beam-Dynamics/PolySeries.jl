@@ -85,7 +85,7 @@ allocating operators accept any `Number` and convert.
 
 `DomainError` signals an expansion center where the function is singular:
 division by a series with zero constant term, `log` at zero, real `sqrt` of a
-negative constant, and real `asin`/`acos` with `|constant| ≥ 1`.
+negative constant, real `asin`/`acos` with `|constant| ≥ 1`, and complex `atan` at `±im`.
 `ArgumentError` signals invalid arguments (exponent vectors, variable indices,
 negative in-place powers, descriptor sizes beyond the limit, releasing a
 workspace slot twice, a composition result that aliases its inputs).
@@ -95,12 +95,13 @@ substitution map with the wrong number of polynomials.
 ## Mathematical functions
 
 The allocating forms are `exp`, `log`, `sqrt`, `sin`, `cos`, `tan`, `asin`,
-`acos`, `sinh`, and `cosh`. Their in-place counterparts are:
+`acos`, `atan`, `sinh`, and `cosh`. Their in-place counterparts are:
 
 `sqrt` and `sqrt!` require a nonzero constant coefficient (positive for real
 coefficients). Expansion about zero is unsupported and raises `DomainError`.
 
-`asin`/`acos` and their in-place forms reject complex branch points at `±1`.
+`asin`/`acos` and their in-place forms reject complex branch points at `±1`,
+and `atan` rejects `±im`; `atan` has no other domain restriction.
 For other complex constants on a branch cut, the sign of the imaginary zero
 selects the local analytic continuation matching Julia's scalar function.
 Evaluating that continuation across the cut need not match the scalar function
@@ -118,12 +119,13 @@ sincos!
 tan!
 asin!
 acos!
+atan!
 sinh!
 cosh!
 ```
 
 Every elementary function is evaluated by a degree-block recurrence — one block
-convolution per function (`tan`, `asin` and `acos` use three) rather than one
+convolution per function (`tan`, `asin` and `acos` use three, `atan` two) rather than one
 series product per order — and produces a result whose active degrees are
 exactly those reachable from the active degrees of the argument. `sincos!`
 computes both trigonometric series in one pass for the cost of one; `div!`

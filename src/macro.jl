@@ -12,7 +12,7 @@
 #
 # Supported operations in `expr`:
 #   a + b, a - b, a * b, a / b, -a, a^n (integer)
-#   sin(a), cos(a), tan(a), exp(a), log(a), sqrt(a), sinh(a), cosh(a), asin(a), acos(a)
+#   sin(a), cos(a), tan(a), exp(a), log(a), sqrt(a), sinh(a), cosh(a), asin(a), acos(a), atan(a)
 #   Scalar (Number) values may appear in +, -, *, / and supported unary calls.
 #
 # The macro is NOT appropriate for:
@@ -131,7 +131,7 @@ end
 
 # Scalar unary calls evaluate in their original scalar type, then store a
 # constant polynomial. CTPS arguments keep the existing in-place kernels.
-for f in (:sin, :cos, :tan, :exp, :log, :sqrt, :sinh, :cosh, :asin, :acos)
+for f in (:sin, :cos, :tan, :exp, :log, :sqrt, :sinh, :cosh, :asin, :acos, :atan)
     helper = Symbol("_tpsa_", f, "!")
     kernel = Symbol(f, "!")
     @eval begin
@@ -162,7 +162,7 @@ end
 @inline _tpsa_scalar(::Val{:^}, a, b) = a ^ b
 @inline _tpsa_scalar(::Val{:literal_pow}, a, b) = Base.literal_pow(^, a, Val(b))
 @inline _tpsa_scalar(::Val{:-}, a)    = -a
-for f in (:sin, :cos, :tan, :exp, :log, :sqrt, :sinh, :cosh, :asin, :acos)
+for f in (:sin, :cos, :tan, :exp, :log, :sqrt, :sinh, :cosh, :asin, :acos, :atan)
     @eval @inline _tpsa_scalar(::Val{$(QuoteNode(f))}, a) = $f(a)
 end
 
@@ -184,7 +184,7 @@ for helper in (:_tpsa_add!, :_tpsa_sub!, :_tpsa_mul!, :_tpsa_div!, :_tpsa_pow!, 
     @eval @inline $helper(out::Number, a::Number, b::Number) = out
 end
 @inline _tpsa_neg!(out::Number, a::Number) = out
-for f in (:sin, :cos, :tan, :exp, :log, :sqrt, :sinh, :cosh, :asin, :acos)
+for f in (:sin, :cos, :tan, :exp, :log, :sqrt, :sinh, :cosh, :asin, :acos, :atan)
     helper = Symbol("_tpsa_", f, "!")
     @eval @inline $helper(out::Number, a::Number) = out
 end
@@ -284,7 +284,7 @@ function _tpsa_lower_expr(ast, ws_sym, stmts, lhs_sym, temporaries)
     lower(arg) = _tpsa_lower_expr(arg, ws_sym, stmts, nothing, temporaries)
 
     binary = Dict(:+ => :_tpsa_add!, :- => :_tpsa_sub!, :* => :_tpsa_mul!, :/ => :_tpsa_div!)
-    unary  = (:sin, :cos, :tan, :exp, :log, :sqrt, :sinh, :cosh, :asin, :acos)
+    unary  = (:sin, :cos, :tan, :exp, :log, :sqrt, :sinh, :cosh, :asin, :acos, :atan)
 
     if na > 2 && f in (:+, :-, :*)
         # Julia evaluates all arguments of a call before applying the operator.
@@ -346,7 +346,7 @@ own scratch buffers for coefficient types other than `Float64`.
 
 # Supported operations
 `+`, `-`, `*`, `/`, unary `-`, `^n` (Int), `sin`, `cos`, `tan`, `exp`, `log`,
-`sqrt`, `sinh`, `cosh`, `asin`, `acos`. Scalar (`Number`) values may appear as
+`sqrt`, `sinh`, `cosh`, `asin`, `acos`, `atan`. Scalar (`Number`) values may appear as
 either operand to `+`, `-`, `*`, `/`, and as arguments to the supported unary
 functions; scalar operations use Julia's ordinary arithmetic and literal-power
 semantics, converting the result to the output coefficient type when stored.

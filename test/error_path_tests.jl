@@ -57,6 +57,11 @@ end
     @test_throws DomainError asin!(q, CTPS(1.0, 1, d))
     @test_throws DomainError acos(CTPS(-1.5, 1, d))
     @test_throws DomainError acos!(q, CTPS(-1.5, 1, d))
+    # atan is entire on the reals; only the complex branch points ±im are singular.
+    @test cst(atan(CTPS(1e6, 1, d))) ≈ atan(1e6)
+    cd = PSDesc(1, 3)
+    @test_throws DomainError atan(CTPS(1.0im, 1, cd))
+    @test_throws DomainError atan!(CTPS(ComplexF64, cd), CTPS(-1.0im, 1, cd))
     # Negative in-place power is an argument error, not a domain error.
     @test_throws ArgumentError pow!(q, p, -1)
     @test_throws ArgumentError pow!(q, 1.0 + p, -2)

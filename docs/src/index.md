@@ -123,6 +123,7 @@ in one expression is not supported.
 | `tan(f)` | `tan!(out, f)` | |
 | `asin(f)` | `asin!(out, f)` | real constant must have absolute value below 1; complex branch points ±1 are rejected |
 | `acos(f)` | `acos!(out, f)` | real constant must have absolute value below 1; complex branch points ±1 are rejected |
+| `atan(f)` | `atan!(out, f)` | any real constant; complex branch points ±im are rejected |
 | `sinh(f)` | `sinh!(out, f)` | |
 | `cosh(f)` | `cosh!(out, f)` | |
 

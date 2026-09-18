@@ -80,6 +80,7 @@ function order_reference(f, n)
         (-big(1))^(n-1) * binomial(big(2n), n) // (big(4)^n * (2n-1))
     # asin(x) = Σ_{k≥0} (2k)! / (4^k (k!)² (2k+1)) x^{2k+1}
     f === asin && return isodd(n) ? binomial(big(n - 1), (n - 1) ÷ 2) // (big(4)^((n - 1) ÷ 2) * n) : big(0)//1
+    f === atan && return isodd(n) ? (-big(1))^((n - 1) ÷ 2) // n : big(0)//1
     error("Missing reference")
 end
 
@@ -90,7 +91,7 @@ end
             tolerance = T === BigFloat ? BigFloat("1e-65") : 1e-12
             for (f, f!) in ((exp, exp!), (sin, sin!), (cos, cos!),
                             (sinh, sinh!), (cosh, cosh!), (log, log!), (sqrt, sqrt!),
-                            (asin, asin!))
+                            (asin, asin!), (atan, atan!))
                 @testset "$T order=$order $f" begin
                     center = f in (log, sqrt) ? one(T) : zero(T)
                     # The asin coefficient recurrence is O(order²) scalar work;
